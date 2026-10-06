@@ -1,6 +1,8 @@
-# Linux AI Assistant
+# WinLinAI
 
-A permanent AI assistant for Linux with a floating interface, integration with several AI APIs, screen capture, expert mode and more.
+The **Linux AI Assistant with the Windows/Qt track** — platform detection (Windows/WSL/Linux), offline PowerShell/WSL/Kali knowledge, diagnostic probes through a PowerShell policy and a WSL bridge, and a Qt UI with tray toggle and Windows autostart via the Registry, while keeping the GTK track intact for Linux (`--ui auto|gtk|qt`).
+
+A permanent AI assistant with a floating interface, integration with several AI APIs, screen capture, expert mode and more.
 
 [![Void Linux](https://img.shields.io/badge/Void%20Linux-Compatible-green)](https://voidlinux.org)
 [![d77void](https://img.shields.io/badge/d77void-Supported-blue)](https://d77void.sourceforge.io)
