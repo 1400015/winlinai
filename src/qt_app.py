@@ -145,6 +145,13 @@ class QtShell(_BaseShell):
         except Exception as error:
             raise QtStartupError("The offline assistant could not be initialized ({})".format(
                 type(error).__name__)) from error
+        # AI provider client (optional; chat falls back to offline without it)
+        ai_client = None
+        try:
+            from .ai_client import AIClient
+            ai_client = AIClient(self.config)
+        except Exception as error:
+            logger.warning("AI client unavailable: %s", type(error).__name__)
         try:
             from .history_store import HistoryStore
             self.history_store = HistoryStore() if self.history_path is None else HistoryStore(self.history_path)
@@ -160,7 +167,8 @@ class QtShell(_BaseShell):
                 "`python -m src.cli history recover --help`.".format(type(error).__name__)) from error
         try:
             self.chat = QtChatWidget(self.config, offline, self,
-                                     history_store=self.history_store)
+                                      history_store=self.history_store,
+                                      ai_client=ai_client)
             layout.addWidget(self.chat, 1)
         except Exception:
             self._close_history()
@@ -214,6 +222,15 @@ def run(config_manager=None, argv=None):
         argv = list(sys.argv[:1]) if argv is None else list(argv)
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(argv)
         app.setApplicationName("linux-ai-assistant")
+
+        # Apply visual theme from themes/*.json
+        try:
+            from .qt_theme import apply_theme, get_current_theme_name
+            theme_name = get_current_theme_name(config_manager)
+            apply_theme(app, theme_name=theme_name)
+        except Exception as error:
+            logger.warning("Could not apply theme: %s", type(error).__name__)
+
         # Single-instance guard (the GTK track uses DesktopActivation):
         # QLockFile also removes a stale lock left by a crashed process.
         lock = QtCore.QLockFile(lock_file_path())

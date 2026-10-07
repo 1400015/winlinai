@@ -148,6 +148,9 @@ class QtSettingsDialog(_BaseDialog):
         api_layout.addWidget(save_key_btn)
         layout.addWidget(api_group)
 
+        # --- Appearance section (theme selector) ---
+        self._build_appearance_section(layout, i18n)
+
         # --- Autostart section (Windows only) ---
         self._build_autostart_section(layout, i18n)
 
@@ -156,6 +159,37 @@ class QtSettingsDialog(_BaseDialog):
             QtWidgets.QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _build_appearance_section(self, layout, i18n):
+        """Add the theme selector."""
+        from .qt_theme import available_themes, get_current_theme_name
+        group = QtWidgets.QGroupBox(i18n._("Appearance"), self)
+        group_layout = QtWidgets.QVBoxLayout(group)
+
+        form = QtWidgets.QFormLayout()
+        self.theme_combo = QtWidgets.QComboBox(group)
+        current = get_current_theme_name(self.config)
+        for theme_name in available_themes():
+            self.theme_combo.addItem(theme_name, theme_name)
+            if theme_name == current:
+                self.theme_combo.setCurrentIndex(self.theme_combo.count() - 1)
+        form.addRow(i18n._("Theme"), self.theme_combo)
+        group_layout.addLayout(form)
+
+        apply_btn = QtWidgets.QPushButton(i18n._("Apply Theme"), group)
+        apply_btn.clicked.connect(self._apply_theme)
+        group_layout.addWidget(apply_btn)
+
+        layout.addWidget(group)
+
+    def _apply_theme(self):
+        """Apply the selected theme immediately."""
+        from .qt_theme import apply_theme, set_current_theme
+        theme_name = self.theme_combo.currentData()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            apply_theme(app, theme_name=theme_name)
+        set_current_theme(self.config, theme_name)
 
     def _build_autostart_section(self, layout, i18n):
         """Add the autostart checkbox (Windows only, hidden elsewhere)."""
@@ -204,7 +238,7 @@ class QtSettingsDialog(_BaseDialog):
 
 
 class QtHistoryDialog(_BaseDialog):
-    """Conversation history: session list, open, new."""
+    """Conversation history: session list, open, new, archive, delete, export."""
 
     def __init__(self, store, parent=None, on_open=None, on_new=None):
         if not QT_AVAILABLE:
@@ -215,18 +249,40 @@ class QtHistoryDialog(_BaseDialog):
         self.on_open = on_open
         self.on_new = on_new
         self.setWindowTitle(i18n._("Conversation History"))
-        self.setMinimumSize(460, 320)
+        self.setMinimumSize(520, 360)
         layout = QtWidgets.QVBoxLayout(self)
         self.list_widget = QtWidgets.QListWidget(self)
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         layout.addWidget(self.list_widget, 1)
-        row = QtWidgets.QHBoxLayout()
+
+        # Button row 1: New, Open
+        row1 = QtWidgets.QHBoxLayout()
         new_button = QtWidgets.QPushButton(i18n._("New conversation"), self)
         new_button.clicked.connect(self._new)
         open_button = QtWidgets.QPushButton(i18n._("Open"), self)
         open_button.clicked.connect(self._open)
-        row.addWidget(new_button)
-        row.addWidget(open_button)
-        layout.addLayout(row)
+        row1.addWidget(new_button)
+        row1.addWidget(open_button)
+        layout.addLayout(row1)
+
+        # Button row 2: Archive, Delete, Export
+        row2 = QtWidgets.QHBoxLayout()
+        self.archive_button = QtWidgets.QPushButton(i18n._("Archive"), self)
+        self.archive_button.clicked.connect(self._archive)
+        self.delete_button = QtWidgets.QPushButton(i18n._("Delete"), self)
+        self.delete_button.clicked.connect(self._delete)
+        self.export_button = QtWidgets.QPushButton(i18n._("Export..."), self)
+        self.export_button.clicked.connect(self._export)
+        row2.addWidget(self.archive_button)
+        row2.addWidget(self.delete_button)
+        row2.addWidget(self.export_button)
+        layout.addLayout(row2)
+
+        # Close button
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
         self.reload()
 
     def reload(self):
@@ -240,11 +296,15 @@ class QtHistoryDialog(_BaseDialog):
                 label += " — " + i18n._("archived")
             item = QtWidgets.QListWidgetItem(label)
             item.setData(QtCore.Qt.UserRole, entry["id"])
+            item.setData(QtCore.Qt.UserRole + 1, entry["archived"])
             self.list_widget.addItem(item)
 
     def selected_session_id(self):
         item = self.list_widget.currentItem()
         return item.data(QtCore.Qt.UserRole) if item is not None else None
+
+    def _selected_item(self):
+        return self.list_widget.currentItem()
 
     def _new(self):
         session = self.store.create_session(select=True)
@@ -261,6 +321,81 @@ class QtHistoryDialog(_BaseDialog):
         if callable(self.on_open):
             self.on_open(session_id)
         self.accept()
+
+    def _archive(self):
+        """Toggle archive status of the selected session."""
+        item = self._selected_item()
+        if item is None:
+            return
+        session_id = item.data(QtCore.Qt.UserRole)
+        is_archived = bool(item.data(QtCore.Qt.UserRole + 1))
+        try:
+            if hasattr(self.store, "set_archived"):
+                self.store.set_archived(session_id, not is_archived)
+            elif hasattr(self.store, "archive_session"):
+                if is_archived:
+                    self.store.unarchive_session(session_id)
+                else:
+                    self.store.archive_session(session_id)
+            else:
+                logger.warning("Archive not supported by this history store")
+                return
+        except Exception as error:
+            logger.error("Archive failed: %s", type(error).__name__)
+            return
+        self.reload()
+
+    def _delete(self):
+        """Delete the selected session after confirmation."""
+        from . import i18n
+        item = self._selected_item()
+        if item is None:
+            return
+        session_id = item.data(QtCore.Qt.UserRole)
+        reply = QtWidgets.QMessageBox.question(
+            self, i18n._("Delete conversation"),
+            i18n._("Delete this conversation? This cannot be undone."),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            if hasattr(self.store, "delete_session"):
+                self.store.delete_session(session_id)
+            else:
+                logger.warning("Delete not supported by this history store")
+                return
+        except Exception as error:
+            logger.error("Delete failed: %s", type(error).__name__)
+            return
+        self.reload()
+
+    def _export(self):
+        """Export the selected session to a file."""
+        from . import i18n
+        item = self._selected_item()
+        if item is None:
+            return
+        session_id = item.data(QtCore.Qt.UserRole)
+        filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, i18n._("Export conversation"),
+            "conversation.md", "Markdown (*.md);;JSON (*.json);;Text (*.txt)")
+        if not filename:
+            return
+        try:
+            if hasattr(self.store, "export_session"):
+                self.store.export_session(session_id, filename)
+            else:
+                # Fallback: export messages manually
+                messages = self.store.load_messages(session_id)
+                with open(filename, "w", encoding="utf-8") as f:
+                    for msg in messages:
+                        role = msg.get("role", "unknown")
+                        content = msg.get("content", "")
+                        f.write(f"**{role}**: {content}\n\n")
+        except Exception as error:
+            logger.error("Export failed: %s", type(error).__name__)
+            QtWidgets.QMessageBox.warning(
+                self, i18n._("Export failed"), str(error))
 
 
 class QtStatisticsDialog(_BaseDialog):
