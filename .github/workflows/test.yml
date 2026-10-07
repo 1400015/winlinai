@@ -76,6 +76,10 @@ jobs:
         # This runner discovers only test_windows_foundation*.py and test_qt_*.py.
         # A Windows capability skip or missing Qt import fails the job.
         run: python scripts/run_windows_tests.py
+      - name: Validate installer scripts and assets
+        # Validates PowerShell syntax (PS parser), .iss file references,
+        # .spec PyInstaller options and asset presence (ico, svg).
+        run: python -m pytest tests/test_installer_assets.py -v
       - name: Build the distribution
         run: python -m build --wheel
       - name: Install and smoke-test the wheel outside the checkout
