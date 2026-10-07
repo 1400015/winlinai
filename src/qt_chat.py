@@ -46,7 +46,8 @@ def append_is_bounded(log_chars, chunk):
     return log_chars + len(chunk) <= MAX_LOG_CHARS
 
 
-def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel_event=None):
+def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel_event=None,
+                        expert=False, distro=None, query="", context=None):
     """Pure send path: call the AI provider and return its answer.
 
     Args:
@@ -56,6 +57,10 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel
         image_paths: Optional list of image file paths to attach
         cancel_event: Optional threading.Event; when set, the request is
             aborted via AIClient's AIRequestCancelled (no offline fallback).
+        expert: Expert mode flag for the system message
+        distro: DistroInfo for the system message (None on Windows)
+        query: User query for knowledge context in the system message
+        context: System context snapshot for the system message
 
     Returns (text, error) where error is None on success.
     Error "cancelled" means the user aborted (AIRequestCancelled).
@@ -63,18 +68,10 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel
     if ai_client is None:
         return None, "no-client"
     try:
-        # Add system message with language preference
-        full_messages = list(messages)
-        system_prompt = "You are a helpful assistant."
-        if lang == "pt":
-            system_prompt = "És um assistente prestável. Responde em português."
-        elif lang == "es":
-            system_prompt = "Eres un asistente útil. Responde en español."
-        elif lang == "fr":
-            system_prompt = "Tu es un assistant utile. Réponds en français."
-        elif lang == "de":
-            system_prompt = "Du bist ein hilfreicher Assistent. Antworte auf Deutsch."
-        full_messages.insert(0, {"role": "system", "content": system_prompt})
+        from .assistant_context import build_system_message
+        system_message = build_system_message(
+            expert=expert, distro=distro, query=query, lang=lang, context=context)
+        full_messages = [system_message] + list(messages)
 
         # Prepare images if provided
         images = None
@@ -148,10 +145,12 @@ if QT_AVAILABLE:
         failed = QtCore.Signal(str)        # (last_user_message) -> offline fallback
         cancelled = QtCore.Signal(str)     # (last_user_message)
 
-        def run(self, ai_client, messages, lang, image_paths, cancel_event):
+        def run(self, ai_client, messages, lang, image_paths, cancel_event,
+                expert=False, distro=None, query="", context=None):
             text, error = provider_reply_text(
                 ai_client, messages, lang,
-                image_paths=image_paths, cancel_event=cancel_event)
+                image_paths=image_paths, cancel_event=cancel_event,
+                expert=expert, distro=distro, query=query, context=context)
             if error == "cancelled":
                 self.cancelled.emit(messages[-1]["content"] if messages else "")
             elif error:
@@ -477,11 +476,25 @@ class QtChatWidget(_BaseWidget):
         self._worker.finished.connect(self._on_provider_response)
         self._worker.failed.connect(self._on_provider_failed)
         self._worker.cancelled.connect(self._on_provider_cancelled)
+        # Capture context for the system message (parity with GTK track)
+        try:
+            expert = bool(self.config.get("app.expert_mode", False))
+        except Exception:
+            expert = False
+        distro = getattr(self.offline, "distro", None)
+        context = getattr(self.offline, "system_context", None)
+        query = ""
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                query = message.get("content", "")
+                break
         self._worker_thread = threading.Thread(
             target=self._worker.run,
             args=(self.ai_client, messages, lang,
                   attachment_paths if attachment_paths else None,
                   self._cancel_event),
+            kwargs={"expert": expert, "distro": distro,
+                    "query": query, "context": context},
             daemon=True,
             name="provider-request",
         )

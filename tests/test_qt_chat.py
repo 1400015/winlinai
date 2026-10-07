@@ -84,10 +84,10 @@ class TestProviderReplyText(unittest.TestCase):
         client.chat.return_value = "OK"
         messages = [{"role": "user", "content": "Hi"}]
         provider_reply_text(client, messages, lang="pt")
-        # Should have added a system message
+        # Should have added a system message (parity with GTK build_system_message)
         called_messages = client.chat.call_args[0][0]
         self.assertEqual(called_messages[0]["role"], "system")
-        self.assertIn("português", called_messages[0]["content"].lower())
+        self.assertIn("Respond in Portuguese", called_messages[0]["content"])
 
     def test_system_message_languages(self):
         client = Mock()
@@ -95,16 +95,35 @@ class TestProviderReplyText(unittest.TestCase):
         messages = [{"role": "user", "content": "Hi"}]
 
         provider_reply_text(client, messages, lang="en")
-        self.assertIn("helpful", client.chat.call_args[0][0][0]["content"].lower())
+        self.assertIn("Respond in English", client.chat.call_args[0][0][0]["content"])
+
+        provider_reply_text(client, messages, lang="pt")
+        self.assertIn("Respond in Portuguese", client.chat.call_args[0][0][0]["content"])
 
         provider_reply_text(client, messages, lang="es")
-        self.assertIn("asistente", client.chat.call_args[0][0][0]["content"].lower())
+        self.assertIn("Respond in Spanish", client.chat.call_args[0][0][0]["content"])
 
         provider_reply_text(client, messages, lang="fr")
-        self.assertIn("assistant", client.chat.call_args[0][0][0]["content"].lower())
+        self.assertIn("Respond in French", client.chat.call_args[0][0][0]["content"])
 
         provider_reply_text(client, messages, lang="de")
-        self.assertIn("assistent", client.chat.call_args[0][0][0]["content"].lower())
+        self.assertIn("Respond in German", client.chat.call_args[0][0][0]["content"])
+
+    def test_system_message_expert_mode(self):
+        client = Mock()
+        client.chat.return_value = "OK"
+        messages = [{"role": "user", "content": "Hi"}]
+        provider_reply_text(client, messages, expert=True)
+        content = client.chat.call_args[0][0][0]["content"]
+        self.assertIn("diagnose", content.lower())
+
+    def test_system_message_without_expert_omits_diagnosis(self):
+        client = Mock()
+        client.chat.return_value = "OK"
+        messages = [{"role": "user", "content": "Hi"}]
+        provider_reply_text(client, messages, expert=False)
+        content = client.chat.call_args[0][0][0]["content"]
+        self.assertNotIn("diagnose Linux systems", content)
 
     def test_cancel_event_passed_to_client(self):
         client = Mock()
