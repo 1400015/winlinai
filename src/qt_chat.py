@@ -46,7 +46,7 @@ def append_is_bounded(log_chars, chunk):
     return log_chars + len(chunk) <= MAX_LOG_CHARS
 
 
-def provider_reply_text(ai_client, messages, lang="en", image_paths=None):
+def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel_event=None):
     """Pure send path: call the AI provider and return its answer.
 
     Args:
@@ -54,8 +54,11 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None):
         messages: List of message dicts
         lang: Language code for system prompt
         image_paths: Optional list of image file paths to attach
+        cancel_event: Optional threading.Event; when set, the request is
+            aborted via AIClient's AIRequestCancelled (no offline fallback).
 
     Returns (text, error) where error is None on success.
+    Error "cancelled" means the user aborted (AIRequestCancelled).
     """
     if ai_client is None:
         return None, "no-client"
@@ -89,11 +92,15 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None):
                 logger.warning("Image validation failed: %s", type(error).__name__)
                 images = None
 
-        response = ai_client.chat(full_messages, images=images)
+        response = ai_client.chat(full_messages, images=images, cancel_event=cancel_event)
         if response:
             return response, None
         return None, "empty-response"
     except Exception as error:
+        from .ai_client import AIRequestCancelled
+        if isinstance(error, AIRequestCancelled):
+            logger.info("Provider request cancelled by user")
+            return None, "cancelled"
         logger.error("AI provider failed: %s", type(error).__name__)
         return None, type(error).__name__
 
@@ -130,6 +137,27 @@ def should_use_provider(ai_client, config_manager):
 if QT_AVAILABLE:
     _BaseWidget = QtWidgets.QWidget
     _Slot = QtCore.Slot
+
+    class _ProviderWorker(QtCore.QObject):
+        """Runs a provider request off the GUI thread and reports via signals.
+
+        Replaces QMetaObject.invokeMethod with string-based slot lookup:
+        signals are type-safe and survive method renames.
+        """
+        finished = QtCore.Signal(str)      # (text)
+        failed = QtCore.Signal(str)        # (last_user_message) -> offline fallback
+        cancelled = QtCore.Signal(str)     # (last_user_message)
+
+        def run(self, ai_client, messages, lang, image_paths, cancel_event):
+            text, error = provider_reply_text(
+                ai_client, messages, lang,
+                image_paths=image_paths, cancel_event=cancel_event)
+            if error == "cancelled":
+                self.cancelled.emit(messages[-1]["content"] if messages else "")
+            elif error:
+                self.failed.emit(messages[-1]["content"] if messages else "")
+            else:
+                self.finished.emit(text or "")
 else:
     _BaseWidget = object
 
@@ -138,6 +166,10 @@ else:
         def decorator(func):
             return func
         return decorator
+
+    class _ProviderWorker:  # type: ignore[no-redef]
+        """Stub so module import works without PySide6 (tests skip the class)."""
+        pass
 
 
 class QtChatWidget(_BaseWidget):
@@ -156,7 +188,9 @@ class QtChatWidget(_BaseWidget):
         self.ai_client = ai_client
         self.history_store = history_store
         self._log_chars = 0
-        self._pending_messages = []  # Messages to send to provider
+        self._pending_messages = []  # Messages to send to provider (main thread only)
+        self._cancel_event = threading.Event()
+        self._worker = None
         self._worker_thread = None
         self._build()
         if self.send_requested is not None:
@@ -383,14 +417,28 @@ class QtChatWidget(_BaseWidget):
         from . import i18n
         self.status_label.setText(i18n._("Thinking..."))
         self.status_label.setVisible(True)
-        self.send_button.setEnabled(False)
+        # The send button becomes a Stop button while a request is in flight.
+        self.send_button.setText(i18n._("Stop"))
+        self.send_button.clicked.disconnect()
+        self.send_button.clicked.connect(self._on_stop_clicked)
         self.input.setEnabled(False)
 
     def _hide_thinking(self):
+        from . import i18n
         self.status_label.setVisible(False)
-        self.send_button.setEnabled(True)
+        self.send_button.setText(i18n._("Send"))
+        try:
+            self.send_button.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self.send_button.clicked.connect(self._on_send_clicked)
         self.input.setEnabled(True)
         self.input.setFocus()
+
+    def _on_stop_clicked(self):
+        """User pressed Stop: cancel the in-flight provider request."""
+        self._cancel_event.set()
+        self.status_label.setText("Cancelling...")
 
     def _send_to_offline(self, text):
         """Send to the offline assistant (synchronous, fast)."""
@@ -409,36 +457,39 @@ class QtChatWidget(_BaseWidget):
             self.response_received.emit(answer)
 
     def _send_to_provider(self):
-        """Send to the AI provider in a worker thread."""
+        """Send to the AI provider via a signal-based worker (no invokeMethod).
+
+        The message list is snapshotted (immutable copy) before the worker
+        starts, so later sends on the main thread cannot race the worker.
+        """
+        if not QT_AVAILABLE:
+            return
         from . import i18n
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
+        # Immutable snapshot: the worker reads this, the main thread keeps
+        # appending to self._pending_messages for the next turn.
         messages = list(self._pending_messages)
-        # Capture attachment paths (they will be cleared after send)
+        # Capture attachment paths (they are cleared after send)
         attachment_paths = [a["path"] for a in self._attachments]
 
-        def worker():
-            text, error = provider_reply_text(
-                self.ai_client, messages, lang,
-                image_paths=attachment_paths if attachment_paths else None)
-            if error:
-                logger.error("Provider error: %s", error)
-                # Fall back to offline
-                QtCore.QMetaObject.invokeMethod(
-                    self, "_fallback_to_offline",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, messages[-1]["content"]))
-            else:
-                QtCore.QMetaObject.invokeMethod(
-                    self, "_on_provider_response",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, text or ""))
-
-        self._worker_thread = threading.Thread(target=worker, daemon=True)
+        self._cancel_event.clear()
+        self._worker = _ProviderWorker()
+        self._worker.finished.connect(self._on_provider_response)
+        self._worker.failed.connect(self._on_provider_failed)
+        self._worker.cancelled.connect(self._on_provider_cancelled)
+        self._worker_thread = threading.Thread(
+            target=self._worker.run,
+            args=(self.ai_client, messages, lang,
+                  attachment_paths if attachment_paths else None,
+                  self._cancel_event),
+            daemon=True,
+            name="provider-request",
+        )
         self._worker_thread.start()
 
     @_Slot(str)
     def _on_provider_response(self, text):
-        """Handle provider response (called from worker thread via signal)."""
+        """Handle provider response (delivered by the worker's finished signal)."""
         from . import i18n
         self._hide_thinking()
         self.append_message(i18n._("AI"), text)
@@ -452,6 +503,30 @@ class QtChatWidget(_BaseWidget):
             self.response_received.emit(text)
         # Offer to write any ``` file blocks in the reply (expert mode only)
         self._offer_file_blocks(text)
+
+    @_Slot(str)
+    def _on_provider_failed(self, last_user_message):
+        """Provider failed: fall back to the offline assistant (signal-based)."""
+        from . import i18n
+        lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
+        answer = offline_reply_text(self.offline, last_user_message, lang) or ""
+        self._hide_thinking()
+        self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
+        self._pending_messages.append({"role": "assistant", "content": answer})
+        if self.history_store is not None:
+            try:
+                self.history_store.append("assistant", answer)
+            except Exception as error:
+                logger.warning("History write failed: %s", type(error).__name__)
+
+    @_Slot(str)
+    def _on_provider_cancelled(self, last_user_message):
+        """User cancelled the in-flight provider request."""
+        from . import i18n
+        self._hide_thinking()
+        self.append_message(i18n._("System"), i18n._("Request cancelled."))
+        self._pending_messages.append(
+            {"role": "system", "content": "Request cancelled by user."})
 
     def _expert_mode_enabled(self):
         try:
@@ -507,21 +582,6 @@ class QtChatWidget(_BaseWidget):
                 self.append_message(
                     i18n._("System"),
                     i18n._("Error writing file: {detail}").format(detail=msg))
-
-    @_Slot(str)
-    def _fallback_to_offline(self, text):
-        """Fall back to offline assistant when provider fails."""
-        from . import i18n
-        lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
-        answer = offline_reply_text(self.offline, text, lang) or ""
-        self._hide_thinking()
-        self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
-        self._pending_messages.append({"role": "assistant", "content": answer})
-        if self.history_store is not None:
-            try:
-                self.history_store.append("assistant", answer)
-            except Exception as error:
-                logger.warning("History write failed: %s", type(error).__name__)
 
     def _on_response_received(self, text):
         """Slot for response_received signal."""

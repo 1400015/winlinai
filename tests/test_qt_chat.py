@@ -1,7 +1,9 @@
 """Tests for Qt chat AI provider integration (src/qt_chat.py)."""
+import threading
 import unittest
 from unittest.mock import Mock
 
+from src.ai_client import AIRequestCancelled
 from src.qt_chat import (
     offline_reply_text,
     append_is_bounded,
@@ -103,6 +105,30 @@ class TestProviderReplyText(unittest.TestCase):
 
         provider_reply_text(client, messages, lang="de")
         self.assertIn("assistent", client.chat.call_args[0][0][0]["content"].lower())
+
+    def test_cancel_event_passed_to_client(self):
+        client = Mock()
+        client.chat.return_value = "OK"
+        messages = [{"role": "user", "content": "Hi"}]
+        event = threading.Event()
+        provider_reply_text(client, messages, cancel_event=event)
+        self.assertIs(client.chat.call_args.kwargs["cancel_event"], event)
+
+    def test_cancelled_request_returns_cancelled_error(self):
+        client = Mock()
+        client.chat.side_effect = AIRequestCancelled("user stop")
+        messages = [{"role": "user", "content": "Hi"}]
+        text, error = provider_reply_text(
+            client, messages, cancel_event=threading.Event())
+        self.assertIsNone(text)
+        self.assertEqual(error, "cancelled")
+
+    def test_no_cancel_event_defaults_to_none(self):
+        client = Mock()
+        client.chat.return_value = "OK"
+        messages = [{"role": "user", "content": "Hi"}]
+        provider_reply_text(client, messages)
+        self.assertIsNone(client.chat.call_args.kwargs["cancel_event"])
 
 
 class TestShouldUseProvider(unittest.TestCase):

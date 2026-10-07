@@ -261,22 +261,17 @@ class QtSettingsDialog(_BaseDialog):
             logger.warning("Could not persist update-check preference")
 
     def _check_updates_now(self):
-        """Run an update check in a worker thread and refresh the status."""
-        import threading
+        """Run an update check via a signal-based worker (no invokeMethod)."""
         from . import i18n
+        from .qt_worker import Worker, start_worker
         from .updater import check_for_updates
 
         self.updates_status.setText(i18n._("Checking for updates..."))
         self.updates_status.setStyleSheet("color: gray;")
 
-        def worker():
-            update = check_for_updates()
-            QtCore.QMetaObject.invokeMethod(
-                self, "_on_update_check_done",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(object, update))
-
-        threading.Thread(target=worker, daemon=True).start()
+        worker = Worker()
+        worker.finished.connect(self._on_update_check_done)
+        start_worker(worker, check_for_updates)
 
     @_Slot(object)
     def _on_update_check_done(self, update):

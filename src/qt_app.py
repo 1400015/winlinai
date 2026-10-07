@@ -119,6 +119,17 @@ class QtShell(_BaseShell):
         if tray is not None:
             tray.update_toggle_label(self.isVisible())
 
+    def notify_update_available(self, update):
+        """Show an update-available system message in the chat."""
+        from . import i18n
+        message = i18n._(
+            "New version available: {version} (open Settings → Updates for details)."
+        ).format(version=update["version"])
+        logger.info("Update available: %s", update["version"])
+        chat = getattr(self, "chat", None)
+        if chat is not None:
+            chat.append_system_message(message)
+
     def _build_tray(self):
         from .qt_tray import QT_AVAILABLE as TRAY_QT_AVAILABLE, QtTrayIcon
         if not TRAY_QT_AVAILABLE or not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
@@ -202,10 +213,12 @@ def lock_file_path(base_dir=None):
 def _maybe_check_updates(config_manager, shell):
     """Silent background update check on startup (opt-in via app.check_updates).
 
-    Never blocks startup: runs in a daemon thread, stores the result in config
-    and reports it as a system message in the chat. No auto-download.
+    Never blocks startup: runs in a daemon thread via a signal-based
+    Worker, stores the result in config and reports it as a system
+    message in the chat. No auto-download.
     """
-    import threading
+    if not QT_AVAILABLE:
+        return
     try:
         enabled = bool(config_manager.get("app.check_updates", True))
     except Exception:
@@ -213,13 +226,13 @@ def _maybe_check_updates(config_manager, shell):
     if not enabled:
         return
 
-    def worker():
-        try:
-            from .updater import check_for_updates
-            update = check_for_updates()
-        except Exception as error:
-            logger.info("Update check skipped: %s", type(error).__name__)
-            return
+    from .qt_worker import Worker, start_worker
+
+    def check():
+        from .updater import check_for_updates
+        return check_for_updates()
+
+    def on_finished(update):
         if update is None:
             return
         try:
@@ -228,18 +241,17 @@ def _maybe_check_updates(config_manager, shell):
             config_manager.set("update.url", update["url"])
         except Exception:
             pass
-        from . import i18n
-        message = i18n._(
-            "New version available: {version} (open Settings → Updates for details)."
-        ).format(version=update["version"])
-        logger.info("Update available: %s", update["version"])
-        if shell is not None and getattr(shell, "chat", None) is not None:
-            QtCore.QMetaObject.invokeMethod(
-                shell.chat, "append_system_message",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, message))
+        if shell is not None:
+            shell.notify_update_available(update)
 
-    threading.Thread(target=worker, daemon=True, name="update-check").start()
+    worker = Worker()
+    worker.finished.connect(on_finished)
+
+    def start():
+        start_worker(worker, check)
+
+    # Defer until the event loop is running so signals are delivered.
+    QtCore.QTimer.singleShot(0, start)
 
 
 def run(config_manager=None, argv=None):

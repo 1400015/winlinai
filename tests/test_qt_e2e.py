@@ -443,53 +443,133 @@ class TestQtUpdatesE2E(TestQtE2EBase):
             "app.check_updates": False,
         }.get(key, default))
         config.set = Mock()
-        with patch("src.qt_app.threading.Thread") as thread_cls:
+        with patch("src.qt_worker.Worker") as worker_cls:
             _maybe_check_updates(config, shell=None)
-        thread_cls.assert_not_called()
+        worker_cls.assert_not_called()
         config.set.assert_not_called()
+
+    @staticmethod
+    def _sync_worker_patches(update_result):
+        """Patches that make _maybe_check_updates run synchronously."""
+        class FakeSignal:
+            def __init__(self):
+                self._slots = []
+            def connect(self, slot):
+                self._slots.append(slot)
+            def emit(self, value):
+                for slot in self._slots:
+                    slot(value)
+
+        class SyncWorker:
+            def __init__(self):
+                self.finished = FakeSignal()
+                self.failed = FakeSignal()
+
+        def sync_start_worker(worker, func, *args, **kwargs):
+            worker.finished.emit(func(*args, **kwargs))
+
+        def run_now(ms, func):
+            func()
+
+        return (
+            patch("src.qt_worker.Worker", SyncWorker),
+            patch("src.qt_worker.start_worker", sync_start_worker),
+            patch("src.qt_app.QtCore.QTimer.singleShot", run_now),
+            patch("src.updater.check_for_updates", return_value=update_result),
+        )
 
     def test_maybe_check_updates_stores_available_update(self):
         from src.qt_app import _maybe_check_updates
-
-        class SyncThread:
-            """Runs the target synchronously so the test is deterministic."""
-            def __init__(self, target=None, daemon=None, name=None):
-                self._target = target
-            def start(self):
-                if self._target:
-                    self._target()
-
         config = Mock()
         config.get = Mock(side_effect=lambda key, default=None: {
             "app.check_updates": True,
         }.get(key, default))
         config.set = Mock()
         fake_update = {"version": "9.9.9", "url": "https://github.com/1400015/winlinai/releases"}
-        with patch("src.qt_app.threading.Thread", SyncThread):
-            with patch("src.updater.check_for_updates", return_value=fake_update):
-                _maybe_check_updates(config, shell=None)
+        p_worker, p_start, p_timer, p_check = self._sync_worker_patches(fake_update)
+        with p_worker, p_start, p_timer, p_check:
+            _maybe_check_updates(config, shell=None)
         config.set.assert_any_call("update.available", True)
         config.set.assert_any_call("update.version", "9.9.9")
 
     def test_maybe_check_updates_quiet_when_none(self):
         from src.qt_app import _maybe_check_updates
-
-        class SyncThread:
-            def __init__(self, target=None, daemon=None, name=None):
-                self._target = target
-            def start(self):
-                if self._target:
-                    self._target()
-
         config = Mock()
         config.get = Mock(side_effect=lambda key, default=None: {
             "app.check_updates": True,
         }.get(key, default))
         config.set = Mock()
-        with patch("src.qt_app.threading.Thread", SyncThread):
-            with patch("src.updater.check_for_updates", return_value=None):
-                _maybe_check_updates(config, shell=None)
+        p_worker, p_start, p_timer, p_check = self._sync_worker_patches(None)
+        with p_worker, p_start, p_timer, p_check:
+            _maybe_check_updates(config, shell=None)
         config.set.assert_not_called()
+
+    def test_maybe_check_updates_notifies_shell(self):
+        from src.qt_app import _maybe_check_updates
+        config = Mock()
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "app.check_updates": True,
+        }.get(key, default))
+        config.set = Mock()
+        shell = Mock()
+        fake_update = {"version": "9.9.9", "url": "https://example.com"}
+        p_worker, p_start, p_timer, p_check = self._sync_worker_patches(fake_update)
+        with p_worker, p_start, p_timer, p_check:
+            _maybe_check_updates(config, shell=shell)
+        shell.notify_update_available.assert_called_once_with(fake_update)
+
+
+class TestQtProviderWorkerE2E(TestQtE2EBase):
+    """E2E: provider worker signals - success, failure fallback, cancellation."""
+
+    def _make_chat(self, ai_client):
+        from src.qt_chat import QtChatWidget
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+        system_utils = SystemUtils(self.config)
+        offline = OfflineAssistant(system_utils, self.config)
+        chat = QtChatWidget(self.config, offline, ai_client=ai_client)
+        self.addCleanup(chat.close)
+        return chat
+
+    def test_provider_success_via_signal(self):
+        ai_client = Mock()
+        ai_client.chat.return_value = "Hello from AI"
+        chat = self._make_chat(ai_client)
+        with patch("src.qt_chat.should_use_provider", return_value=True):
+            chat.input.setText("hi")
+            chat._on_send()
+            chat._worker_thread.join(timeout=5)
+        self.assertIn("Hello from AI", chat.log.toPlainText())
+
+    def test_provider_failure_falls_back_to_offline(self):
+        ai_client = Mock()
+        ai_client.chat.side_effect = RuntimeError("boom")
+        chat = self._make_chat(ai_client)
+        with patch("src.qt_chat.should_use_provider", return_value=True):
+            chat.input.setText("hello offline")
+            chat._on_send()
+            chat._worker_thread.join(timeout=5)
+        log_text = chat.log.toPlainText()
+        self.assertIn("answered offline", log_text)
+
+    def test_cancel_event_aborts_request(self):
+        from src.ai_client import AIRequestCancelled
+
+        def slow_chat(messages, images=None, cancel_event=None):
+            if cancel_event is not None:
+                cancel_event.wait(timeout=5)
+            raise AIRequestCancelled("user stop")
+
+        ai_client = Mock()
+        ai_client.chat.side_effect = slow_chat
+        chat = self._make_chat(ai_client)
+        with patch("src.qt_chat.should_use_provider", return_value=True):
+            chat.input.setText("long question")
+            chat._on_send()
+            chat._on_stop_clicked()
+            chat._worker_thread.join(timeout=5)
+        self.assertIn("cancelled", chat.log.toPlainText().lower())
 
 
 if __name__ == "__main__":
