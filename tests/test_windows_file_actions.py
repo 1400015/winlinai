@@ -413,6 +413,64 @@ class TestWriteBoundarySecurity(unittest.TestCase):
                         if os.path.isdir(directory) and not os.listdir(directory) else None)
         return directory
 
+    def test_intermediate_directory_link_is_refused(self):
+        """A subdirectory that is a link out of the allowed directory."""
+        outside = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        allowed = self._allowed_dir()
+        # sub -> outside; the OS-specific link type the system accepts.
+        sub = os.path.join(allowed, "sub")
+        self._make_directory_link(outside, sub)
+        def cleanup_link():
+            if os.path.islink(sub):
+                os.unlink(sub)
+            elif os.path.isdir(sub):
+                os.rmdir(sub)
+        self.addCleanup(cleanup_link)
+        exterior = os.path.join(outside, "leaked.txt")
+
+        # write through the linked subdirectory must not create the file.
+        success, message, _backup = write_file_safe(
+            os.path.join(sub, "file.txt"), "attacker", allowed_dirs=[allowed])
+        self.assertFalse(success, message)
+        self.assertIn("link", message.lower())
+        self.assertFalse(os.path.exists(exterior))
+
+        # a pre-existing exterior file reached through the sub link
+        with open(exterior, "w") as handle:
+            handle.write("exterior secret")
+
+        # read through the linked subdirectory is refused
+        success, _content, _truncated = read_file_preview(
+            os.path.join(sub, "leaked.txt"), allowed_dirs=[allowed])
+        self.assertFalse(success)
+
+        # delete through the linked subdirectory is refused
+        success, _message, _backup = delete_file_safe(
+            os.path.join(sub, "leaked.txt"), allowed_dirs=[allowed])
+        self.assertFalse(success)
+        self.assertTrue(os.path.exists(exterior))
+
+    def _make_directory_link(self, target, link):
+        """Create a directory link, preferring a junction on Windows.
+
+        On Linux a symlink to a directory always works, so the test never
+        skips there. On Windows, try a junction first (no privilege needed)
+        and fall back to a symlink; skip only when the OS refuses both.
+        """
+        if os.name == "nt":
+            import subprocess
+            result = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", link, target],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                check=False)
+            if result.returncode == 0:
+                return
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest("The OS refused to create the directory link: " + str(error))
+
     def test_planted_temporary_symlink_is_refused(self):
         # target.txt.tmp as a link to a file outside the allowed directory.
         outside = tempfile.mkdtemp()
@@ -482,26 +540,33 @@ class TestWriteBoundarySecurity(unittest.TestCase):
             handle.write("original")
         original_identity = _file_identity(target)
 
-        def race(content):
-            # Replace the destination while the temporary is being written.
-            with open(target, "w") as handle:
-                handle.write("raced")
-            return content
+        # The destination is replaced between the backup snapshot and the
+        # publication rename: the writer saw the original identity, but the
+        # revalidation must see what is actually on disk by then.
+        def fake_identity(path):
+            if path != target:
+                return _file_identity(path)
+            if not hasattr(fake_identity, "reads"):
+                fake_identity.reads = 0
+            fake_identity.reads += 1
+            if fake_identity.reads == 1:
+                # First read: the pre-race snapshot.
+                return original_identity
+            # Revalidation: the destination was replaced meanwhile.
+            with open(target, "w") as racer:
+                racer.write("raced content")
+            return _file_identity(path)
 
         with patch("src.windows_file_actions._file_identity",
-                   side_effect=lambda path: (
-                       original_identity if path == target and os.path.getsize(target) == 8
-                       else _file_identity(path))):
+                   side_effect=fake_identity):
             success, message, _backup = write_file_safe(
-                target, "attacker", allowed_dirs=[allowed])
-        # Either the identity check caught the race (refused) or the write
-        # is safe; the raced content must never be silently replaced by a
-        # write that verified a stale identity.
-        if success:
-            with open(target) as handle:
-                self.assertEqual(handle.read(), "attacker")
-        else:
-            self.assertIn("Destination changed", message)
+                target, "attacker content", allowed_dirs=[allowed])
+        self.assertFalse(success)
+        self.assertIn("Destination changed", message)
+        # The raced content is still in the file: the stale write was not
+        # published over it.
+        with open(target) as handle:
+            self.assertEqual(handle.read(), "raced content")
 
     def test_destination_symlink_refused(self):
         outside = tempfile.mkdtemp()

@@ -66,18 +66,47 @@ MAX_DIFF_BYTES = 1024 * 1024  # 1 MB
 
 
 def _is_link(path) -> bool:
-    """True when path exists as a symlink/reparse point, on any host.
+    """True when path exists as a symlink/junction/reparse point, any host.
 
-    Uses os.path.islink plus a lstat check so Windows junctions and other
-    reparse points are also caught through their file attributes.
+    os.path.islink alone misses Windows junctions: a junction is a directory
+    whose reparse data lives in FILE_ATTRIBUTE_REPARSE_POINT, so the lstat
+    file attributes are checked too.
     """
     try:
-        if os.path.islink(path):
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode):
             return True
-        mode = os.lstat(path).st_mode
-        return not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if attributes and (attributes & reparse):
+            return True
+        return not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
     except OSError:
         return False
+
+
+def _path_or_ancestor_is_link(path) -> bool:
+    """True when the final path or any existing ancestor is a link.
+
+    An authorized directory can contain a subdirectory that is a symlink or
+    junction pointing outside it; writing through such a subdirectory
+    would create the file outside the allowed root. Every existing
+    ancestor is inspected before any mkdir/open/unlink/replace.
+    """
+    candidate = os.fspath(path)
+    if _is_link(candidate):
+        return True
+    parent = os.path.dirname(candidate)
+    while parent:
+        if not os.path.lexists(parent):
+            break
+        if _is_link(parent):
+            return True
+        previous = parent
+        parent = os.path.dirname(parent)
+        if parent == previous:
+            break
+    return False
 
 
 def is_windows() -> bool:
@@ -359,9 +388,10 @@ def write_file_safe(path: str, content: str, create_backup: bool = True,
     try:
         normalized = normalize_windows_path(path)
 
-        # A destination that exists as a link is refused outright: writing
-        # through it would leave the allowed directory.
-        if _is_link(normalized):
+        # A destination that exists as a link - or that sits under an
+        # ancestor that is a link - is refused outright: writing through
+        # it would leave the allowed directory. This runs before mkdir.
+        if _path_or_ancestor_is_link(normalized):
             return False, "Refusing to write through a link", None
 
         # Create parent directories if needed (inside the allowed root)
@@ -438,7 +468,7 @@ def read_file_preview(path: str, max_bytes: int = MAX_DIFF_BYTES,
         return False, "Path is not allowed for AI reads", False
     try:
         path = os.path.expanduser(path)
-        if _is_link(path):
+        if _path_or_ancestor_is_link(path):
             return False, "Refusing to read through a link", False
         if not os.path.isfile(path):
             return False, "File not found", False
@@ -497,8 +527,8 @@ def delete_file_safe(path: str, create_backup: bool = True,
         return False, "Path is not allowed for AI deletes", None
     try:
         normalized = normalize_windows_path(path)
-        if _is_link(normalized):
-            return False, "Refusing to delete a link", None
+        if _path_or_ancestor_is_link(normalized):
+            return False, "Refusing to delete through a link", None
         if not normalized.exists():
             return False, "File not found", None
 
