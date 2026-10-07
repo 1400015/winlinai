@@ -230,3 +230,160 @@ def get_chat_style_colors(colors: Dict, theme_info: Optional[Dict]) -> Dict[str,
         'code': safe_color(syntax_colors.get('code'), text_color),
         'code_background': secondary_color,
     }
+
+
+def build_gtk_css(colors: Dict, theme_info: Optional[Dict],
+                  font_family: str, font_size: int, border_radius: int) -> str:
+    """Build the exact GTK CSS string used by MainWindow._setup_style.
+
+    Extracted verbatim from main_window.py so the GTK track and the
+    extracted module share a single source of truth. The golden test
+    (tests/test_theme_golden.py) pins this output.
+
+    Args:
+        colors: Theme colors dict (background, text, accent, secondary, tertiary)
+        theme_info: Optional theme info (unused for now, kept for parity)
+        font_family: Resolved font family (already validated)
+        font_size: Resolved font size in pt (already validated)
+        border_radius: Resolved border radius in px (already validated)
+
+    Returns:
+        CSS string for Gtk.CssProvider.load_from_data
+    """
+    # Usar valores validados do theme (ver safe_color/safe_font_family)
+    bg_color = safe_color(colors.get('background'), '#1e1e1e')
+    text_color = safe_color(colors.get('text'), '#e0e0e0')
+    accent_color = safe_color(colors.get('accent'), '#4CAF50')
+    secondary_color = safe_color(colors.get('secondary'), '#2d2d2d')
+    tertiary_color = safe_color(colors.get('tertiary'), '#252525')
+    accent_text = contrasting_text_color(accent_color)
+    expert_text = contrasting_text_color('#2196F3')
+    danger_text = contrasting_text_color('#f44336')
+
+    css = f"""
+        .linux-ai-main #main-box {{
+            background-color: {bg_color};
+            color: {text_color};
+            border-radius: {border_radius}px;
+            padding: 10px;
+            margin: 5px;
+        }}
+
+        .linux-ai-main #header {{
+            background-color: {secondary_color};
+            border-radius: {border_radius}px {border_radius}px 0 0;
+            padding: 8px;
+            margin-bottom: 10px;
+        }}
+
+        .linux-ai-main #chat-area {{
+            background-color: {tertiary_color};
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 10px;
+            min-height: 300px;
+        }}
+
+        .linux-ai-main #input-area {{
+            background-color: {secondary_color};
+            border-radius: 5px;
+            padding: 10px;
+        }}
+
+        .linux-ai-main #main-box textview,
+        .linux-ai-main #main-box textview text {{
+            font-family: {font_family};
+            font-size: {font_size}pt;
+            background-color: {tertiary_color};
+            color: {text_color};
+            border: none;
+            padding: 5px;
+        }}
+
+        .linux-ai-main #main-box button {{
+            background-color: {accent_color};
+            background-image: none;
+            color: {accent_text};
+            text-shadow: none;
+            -gtk-icon-shadow: none;
+            box-shadow: none;
+            border-radius: 5px;
+            padding: 5px 10px;
+            font-family: {font_family};
+            font-size: 10pt;
+            border: none;
+            min-width: 32px;
+        }}
+
+        .linux-ai-main #main-box button:hover {{
+            opacity: 0.9;
+        }}
+
+        .linux-ai-main #main-box button:active {{
+            opacity: 0.7;
+        }}
+
+        .linux-ai-main #main-box button.expert {{
+            background-color: #2196F3;
+            color: {expert_text};
+        }}
+
+        .linux-ai-main #main-box button.expert:hover {{
+            background-color: #0b7dda;
+        }}
+
+        .linux-ai-main #main-box button.danger {{
+            background-color: #f44336;
+            color: {danger_text};
+        }}
+
+        .linux-ai-main #main-box button.danger:hover {{
+            background-color: #da190b;
+        }}
+
+        .linux-ai-main #main-box button:disabled {{
+            background-color: {secondary_color};
+            color: {text_color};
+            opacity: 0.6;
+        }}
+
+        .linux-ai-main #main-box entry {{
+            background-color: {secondary_color};
+            background-image: none;
+            color: {text_color};
+            border-radius: 5px;
+            padding: 5px;
+            font-family: {font_family};
+            font-size: {font_size}pt;
+            border: 1px solid transparent;
+            box-shadow: none;
+            caret-color: {text_color};
+        }}
+
+        .linux-ai-main #main-box entry:focus {{
+            border: 1px solid {accent_color};
+        }}
+
+        .linux-ai-main #main-box entry selection,
+        .linux-ai-main #main-box textview text selection {{
+            background-color: {accent_color};
+            color: {accent_text};
+        }}
+
+        .linux-ai-main #main-box scrolledwindow {{
+            background-color: {tertiary_color};
+            border-radius: 5px;
+            border: none;
+        }}
+
+        .linux-ai-main #main-box .loading {{
+            opacity: 0.7;
+            font-style: italic;
+        }}
+
+        .linux-ai-main #main-box .expert-mode {{
+            border-left: 3px solid #2196F3;
+            padding-left: 10px;
+        }}
+        """
+    return css
