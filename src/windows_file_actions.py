@@ -21,6 +21,7 @@ import logging
 import ntpath
 import os
 import re
+import stat
 import sys
 import time
 import uuid
@@ -62,6 +63,21 @@ SENSITIVE_DIR_NAMES = (
 )
 
 MAX_DIFF_BYTES = 1024 * 1024  # 1 MB
+
+
+def _is_link(path) -> bool:
+    """True when path exists as a symlink/reparse point, on any host.
+
+    Uses os.path.islink plus a lstat check so Windows junctions and other
+    reparse points are also caught through their file attributes.
+    """
+    try:
+        if os.path.islink(path):
+            return True
+        mode = os.lstat(path).st_mode
+        return not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
+    except OSError:
+        return False
 
 
 def is_windows() -> bool:
@@ -308,12 +324,22 @@ def make_backup(path: str) -> Optional[str]:
     return None
 
 
-def write_file_safe(path: str, content: str, create_backup: bool = True) -> Tuple[bool, str, Optional[str]]:
+def _file_identity(path: str):
+    """Host-independent file identity used across the publication window."""
+    info = os.lstat(path)
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
+def write_file_safe(path: str, content: str, create_backup: bool = True,
+                    allowed_dirs: Optional[List[str]] = None) -> Tuple[bool, str, Optional[str]]:
     """Safely write content to a file.
 
-    - Validates the path is allowed
-    - Creates a backup if the file exists
-    - Writes atomically (temp file + rename)
+    - Validates the path against the allowlist and the sensitive list before
+      any filesystem operation
+    - Refuses symlink/junction/reparse-point destinations and temporaries
+    - Creates a random, exclusive temporary in the destination directory
+    - Aborts when a required backup fails, leaving the original intact
+    - Revalidates the destination identity before publishing the rename
 
     Args:
         path: Target file path
@@ -323,42 +349,97 @@ def write_file_safe(path: str, content: str, create_backup: bool = True) -> Tupl
     Returns:
         (success, message, backup_path)
     """
+    # Security decisions run before any mkdir/open/unlink/replace. They use
+    # ntpath/PureWindowsPath semantics (see _normalize_pure) and never the
+    # host's expandvars/expanduser/normpath/abspath.
+    if is_sensitive_windows_path(path):
+        return False, "Path is sensitive and cannot be written", None
+    if not is_allowed_windows_path(path, allowed_dirs):
+        return False, "Path is not allowed for AI writes", None
     try:
         normalized = normalize_windows_path(path)
 
-        # Create parent directories if needed
+        # A destination that exists as a link is refused outright: writing
+        # through it would leave the allowed directory.
+        if _is_link(normalized):
+            return False, "Refusing to write through a link", None
+
+        # Create parent directories if needed (inside the allowed root)
         normalized.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create backup
+        # Backup first: a required backup that fails aborts the write so the
+        # original file stays intact.
         backup = None
-        if create_backup and normalized.exists():
-            backup = make_backup(str(normalized))
+        target_identity = None
+        if normalized.exists():
+            if _is_link(normalized):
+                return False, "Refusing to write through a link", None
+            if create_backup:
+                backup = make_backup(str(normalized))
+                if backup is None:
+                    return False, "Backup failed; write aborted, original preserved", None
+            target_identity = _file_identity(str(normalized))
 
-        # Write atomically (temp file + rename)
-        temp_path = normalized.with_suffix(normalized.suffix + ".tmp")
-        with open(temp_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        # Atomic rename
-        os.replace(temp_path, normalized)
+        # Random, exclusive temporary in the destination directory; a
+        # pre-existing name is never opened with "w" (that would follow a
+        # planted symlink) because O_EXCL refuses to create over anything.
+        temp_path = None
+        for _ in range(100):
+            candidate = normalized.with_name(
+                normalized.name + "." + uuid.uuid4().hex + ".tmp")
+            try:
+                temp_fd = os.open(str(candidate),
+                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
+                temp_path = candidate
+                break
+            except FileExistsError:
+                continue
+        if temp_path is None:
+            return False, "Could not allocate an exclusive temporary file", None
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                f.write(content)
 
-        return True, f"File written: {normalized}", backup
+            # Publication window: the destination must not have been replaced
+            # between the backup and the rename.
+            if target_identity is not None:
+                if not normalized.exists() or _file_identity(str(normalized)) != target_identity:
+                    return False, "Destination changed during the write; original preserved", None
+            elif normalized.exists():
+                return False, "Destination appeared during the write; nothing published", None
+
+            os.replace(str(temp_path), str(normalized))
+            return True, f"File written: {normalized}", backup
+        except OSError:
+            try:
+                os.unlink(str(temp_path))
+            except OSError:
+                pass
+            raise
 
     except PermissionError as e:
         return False, f"Permission denied: {e}", None
     except OSError as e:
         return False, f"Write failed: {e}", None
-    except Exception as e:
-        return False, f"Unexpected error: {type(e).__name__}", None
 
 
-def read_file_preview(path: str, max_bytes: int = MAX_DIFF_BYTES) -> Tuple[bool, str, bool]:
+def read_file_preview(path: str, max_bytes: int = MAX_DIFF_BYTES,
+                       allowed_dirs: Optional[List[str]] = None) -> Tuple[bool, str, bool]:
     """Read a file for preview (bounded).
+
+    The allowlist and the sensitive list are checked before any open.
 
     Returns:
         (success, content, truncated)
     """
+    if is_sensitive_windows_path(path):
+        return False, "Path is sensitive and cannot be read", False
+    if not is_allowed_windows_path(path, allowed_dirs):
+        return False, "Path is not allowed for AI reads", False
     try:
         path = os.path.expanduser(path)
+        if _is_link(path):
+            return False, "Refusing to read through a link", False
         if not os.path.isfile(path):
             return False, "File not found", False
         size = os.path.getsize(path)
@@ -399,21 +480,34 @@ def list_directory(path: str, max_items: int = 100) -> Tuple[bool, List[dict], O
         return False, [], str(e)
 
 
-def delete_file_safe(path: str, create_backup: bool = True) -> Tuple[bool, str, Optional[str]]:
+def delete_file_safe(path: str, create_backup: bool = True,
+                     allowed_dirs: Optional[List[str]] = None) -> Tuple[bool, str, Optional[str]]:
     """Safely delete a file (with optional backup).
+
+    The allowlist and the sensitive list are checked before any exists,
+    backup or unlink; links are refused so a planted link is never followed
+    or deleted.
 
     Returns:
         (success, message, backup_path)
     """
+    if is_sensitive_windows_path(path):
+        return False, "Path is sensitive and cannot be deleted", None
+    if not is_allowed_windows_path(path, allowed_dirs):
+        return False, "Path is not allowed for AI deletes", None
     try:
         normalized = normalize_windows_path(path)
+        if _is_link(normalized):
+            return False, "Refusing to delete a link", None
         if not normalized.exists():
             return False, "File not found", None
 
-        # Create backup
+        # A required backup that fails aborts the delete: the original stays.
         backup = None
         if create_backup:
             backup = make_backup(str(normalized))
+            if backup is None:
+                return False, "Backup failed; delete aborted, original preserved", None
 
         # Delete
         normalized.unlink()
@@ -492,7 +586,8 @@ class WindowsFileActions:
                 return "cancelled", "User cancelled"
 
         # Write
-        success, message, backup = write_file_safe(str(normalized), content)
+        success, message, backup = write_file_safe(str(normalized), content,
+                                                   allowed_dirs=self.allowed_dirs)
         if success:
             return "written", message
         return "error", message
@@ -501,7 +596,8 @@ class WindowsFileActions:
         """Read a file (bounded)."""
         if not self.is_allowed(path):
             return False, "Path not allowed"
-        success, content, _truncated = read_file_preview(path, max_bytes)
+        success, content, _truncated = read_file_preview(path, max_bytes,
+                                                        allowed_dirs=self.allowed_dirs)
         return success, content
 
     def delete_file(self, path: str,
@@ -520,7 +616,8 @@ class WindowsFileActions:
             if not confirmed:
                 return "cancelled", "User cancelled"
 
-        success, message, _backup = delete_file_safe(str(normalized))
+        success, message, _backup = delete_file_safe(str(normalized),
+                                                    allowed_dirs=self.allowed_dirs)
         if success:
             return "written", message
         return "error", message
