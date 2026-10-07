@@ -97,6 +97,9 @@ files = [
     "src/build_info.py",
     "src/system_context.py",
     "src/credential_store.py",
+    # Theme utilities (refactored from main_window.py)
+    "src/theme_utils.py",
+    "src/main_window_themes.py",
     # Windows foundation (phase 1)
     "src/windows_autostart.py",
     "src/platform/tray_config.py",
