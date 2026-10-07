@@ -450,6 +450,63 @@ class QtChatWidget(_BaseWidget):
                 logger.warning("History write failed: %s", type(error).__name__)
         if self.response_received is not None:
             self.response_received.emit(text)
+        # Offer to write any ``` file blocks in the reply (expert mode only)
+        self._offer_file_blocks(text)
+
+    def _expert_mode_enabled(self):
+        try:
+            return bool(self.config.get("app.expert_mode", False))
+        except Exception:
+            return False
+
+    def _allowed_edit_dirs(self):
+        try:
+            dirs = self.config.get("permissions.allowed_edit_dirs", [])
+            return list(dirs) if isinstance(dirs, list) else []
+        except Exception:
+            return []
+
+    def _offer_file_blocks(self, reply_text):
+        """Detect ``` file blocks in an AI reply and offer to write them (Qt).
+
+        Mirrors the GTK track (file_actions.offer_file_blocks_async): only in
+        expert mode, at most 3 blocks, each confirmed via a Qt dialog and
+        written through WindowsFileActions (path validation + backup + atomic).
+        """
+        from . import i18n
+        from .render_core import FileBlock
+        from .windows_file_actions import WindowsFileActions, preview_diff
+        from .qt_file_dialogs import confirm_file_write_qt
+
+        if not self._expert_mode_enabled():
+            return
+        blocks = FileBlock.parse_all(reply_text)
+        if not blocks or len(blocks) > 3:
+            return
+        actions = WindowsFileActions(allowed_dirs=self._allowed_edit_dirs())
+        for block in blocks:
+            if not actions.is_allowed(block.path):
+                self.append_message(
+                    i18n._("System"),
+                    i18n._("Path not allowed: {path}").format(path=block.path))
+                continue
+            diff = preview_diff(block.path, block.content)
+            content = diff if diff is not None else block.content
+            confirmed = confirm_file_write_qt(self, block.path, content, is_new=diff is None)
+            if not confirmed:
+                self.append_message(
+                    i18n._("System"),
+                    i18n._("File write cancelled: {path}").format(path=block.path))
+                continue
+            status, msg = actions.write_file(block.path, block.content)
+            if status == "written":
+                self.append_message(
+                    i18n._("System"),
+                    i18n._("File written: {path}").format(path=block.path))
+            else:
+                self.append_message(
+                    i18n._("System"),
+                    i18n._("Error writing file: {detail}").format(detail=msg))
 
     @_Slot(str)
     def _fallback_to_offline(self, text):

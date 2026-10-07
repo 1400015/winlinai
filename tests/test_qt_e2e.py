@@ -322,5 +322,107 @@ class TestQtChatE2E(TestQtE2EBase):
         self.assertIn("AI", log_text)
 
 
+class TestQtFileBlocksE2E(TestQtE2EBase):
+    """E2E: AI reply with a ``` file block triggers write flow (expert mode)."""
+
+    def _make_expert_config(self, allowed_dir):
+        config = Mock()
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "app.expert_mode": True,
+            "app.tray_toggle_on_click": True,
+            "permissions.allowed_edit_dirs": [str(allowed_dir)],
+        }.get(key, default))
+        config.set = Mock()
+        config.get_api_key = Mock(return_value=None)
+        return config
+
+    def test_file_block_written_when_confirmed(self):
+        """A ``` block in the AI reply is written after Qt confirmation."""
+        from unittest.mock import patch
+        from src.qt_chat import QtChatWidget
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+
+        target = Path(self.temp_dir.name) / "hello.py"
+        config = self._make_expert_config(self.temp_dir.name)
+        system_utils = SystemUtils(config)
+        offline = OfflineAssistant(system_utils, config)
+        chat = QtChatWidget(config, offline, ai_client=None)
+        self.addCleanup(chat.close)
+
+        reply = f"Here is the file:\n```\n{target}\nprint('hi')\n```\nDone."
+        with patch("src.qt_file_dialogs.confirm_file_write_qt", return_value=True):
+            chat._on_provider_response(reply)
+
+        self.assertTrue(target.exists())
+        self.assertEqual(target.read_text(encoding="utf-8"), "print('hi')\n")
+        log_text = chat.log.toPlainText()
+        self.assertIn("File written", log_text)
+
+    def test_file_block_skipped_when_cancelled(self):
+        """Cancelling the confirmation dialog leaves no file behind."""
+        from unittest.mock import patch
+        from src.qt_chat import QtChatWidget
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+
+        target = Path(self.temp_dir.name) / "nope.py"
+        config = self._make_expert_config(self.temp_dir.name)
+        system_utils = SystemUtils(config)
+        offline = OfflineAssistant(system_utils, config)
+        chat = QtChatWidget(config, offline, ai_client=None)
+        self.addCleanup(chat.close)
+
+        reply = f"```\n{target}\nprint('nope')\n```"
+        with patch("src.qt_file_dialogs.confirm_file_write_qt", return_value=False):
+            chat._on_provider_response(reply)
+
+        self.assertFalse(target.exists())
+        self.assertIn("cancelled", chat.log.toPlainText())
+
+    def test_file_blocks_ignored_without_expert_mode(self):
+        """Without expert mode, file blocks in replies are not offered."""
+        from src.qt_chat import QtChatWidget
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+
+        target = Path(self.temp_dir.name) / "ignored.py"
+        config = Mock()
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "app.expert_mode": False,
+            "permissions.allowed_edit_dirs": [str(self.temp_dir.name)],
+        }.get(key, default))
+        config.set = Mock()
+        config.get_api_key = Mock(return_value=None)
+        system_utils = SystemUtils(config)
+        offline = OfflineAssistant(system_utils, config)
+        chat = QtChatWidget(config, offline, ai_client=None)
+        self.addCleanup(chat.close)
+
+        reply = f"```\n{target}\nprint('ignored')\n```"
+        chat._on_provider_response(reply)
+        self.assertFalse(target.exists())
+
+    def test_disallowed_path_is_rejected(self):
+        """A path outside allowed dirs is rejected without a dialog."""
+        from unittest.mock import patch
+        from src.qt_chat import QtChatWidget
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+
+        config = self._make_expert_config(self.temp_dir.name)
+        system_utils = SystemUtils(config)
+        offline = OfflineAssistant(system_utils, config)
+        chat = QtChatWidget(config, offline, ai_client=None)
+        self.addCleanup(chat.close)
+
+        outside = Path(self.temp_dir.name).parent / "outside_target.py"
+        reply = f"```\n{outside}\nprint('x')\n```"
+        with patch("src.qt_file_dialogs.confirm_file_write_qt", return_value=True) as dialog:
+            chat._on_provider_response(reply)
+        dialog.assert_not_called()
+        self.assertIn("not allowed", chat.log.toPlainText())
+
+
 if __name__ == "__main__":
     unittest.main()
