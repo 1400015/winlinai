@@ -51,5 +51,5 @@ else:
         """Stub so module import works without PySide6."""
         pass
 
-    def start_worker(worker, func, *args, **kwargs):  # type: ignore[misc]
+    def start_worker(worker, func, *args, **kwargs):
         raise RuntimeError("PySide6 is required for Worker")

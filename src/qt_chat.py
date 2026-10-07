@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel
         full_messages = [system_message] + list(messages)
 
         # Prepare images if provided
-        images = None
+        images: Optional[list] = None
         if image_paths:
             try:
                 from .image_attachments import validate_attachment
@@ -171,7 +172,7 @@ else:
         pass
 
 
-class QtChatWidget(_BaseWidget):
+class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
     """Message log plus input line, driven by AI provider or offline assistant."""
 
     send_requested = QtCore.Signal(str) if QT_AVAILABLE else None

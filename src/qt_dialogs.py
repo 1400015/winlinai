@@ -123,7 +123,7 @@ else:
     _BaseDialog = object
 
 
-class QtSettingsDialog(_BaseDialog):
+class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
     """API settings: provider selector, key entry, save, plus autostart."""
 
     def __init__(self, config, parent=None):
@@ -328,7 +328,7 @@ class QtSettingsDialog(_BaseDialog):
 
     def _on_autostart_changed(self, state):
         from . import i18n
-        from .windows_autostart import set_autostart, is_autostart_enabled, autostart_status_label
+        from .windows_autostart import set_autostart, is_autostart_enabled
         enabled = state == QtCore.Qt.Checked
         result = set_autostart(enabled)
         status = is_autostart_enabled()
@@ -353,7 +353,7 @@ class QtSettingsDialog(_BaseDialog):
             self.accept()
 
 
-class QtHistoryDialog(_BaseDialog):
+class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
     """Conversation history: session list, open, new, archive, delete, export."""
 
     def __init__(self, store, parent=None, on_open=None, on_new=None):
@@ -514,7 +514,7 @@ class QtHistoryDialog(_BaseDialog):
                 self, i18n._("Export failed"), str(error))
 
 
-class QtStatisticsDialog(_BaseDialog):
+class QtStatisticsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
     """Usage statistics: token counts by provider, with reset."""
 
     def __init__(self, ai_client, parent=None):

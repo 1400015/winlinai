@@ -5,6 +5,7 @@ PySide6 is an optional dependency: when absent, ``available()`` is False and
 """
 import logging
 import sys
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ else:
     _BaseShell = object
 
 
-class QtShell(_BaseShell):
+class QtShell(_BaseShell):  # type: ignore[misc, valid-type]
     """Qt main window: status line plus the chat widget (phase 4b)."""
 
     def __init__(self, config_manager, platform_name, history_path=None):
@@ -55,6 +56,7 @@ class QtShell(_BaseShell):
         self.history_path = history_path
         self.chat = None
         self.history_store = None
+        self.tray_icon: Optional[Any] = None
         self.setWindowTitle("Linux AI Assistant")
         self.resize(*MIN_WINDOW_SIZE)
         central = QtWidgets.QWidget(self)

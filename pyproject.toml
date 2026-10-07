@@ -107,10 +107,19 @@ files = [
     # Qt track (phases 2-4)
     "src/qt_theme.py",
     "src/qt_conversation_actions.py",
+    "src/qt_worker.py",
+    "src/qt_chat.py",
+    "src/qt_app.py",
+    "src/qt_dialogs.py",
+    "src/qt_tray.py",
+    # Shared assistant context (used by both GTK and Qt tracks)
+    "src/assistant_context.py",
     # Windows-specific modules
     "src/windows_screenshot.py",
     "src/windows_system_actions.py",
     "src/windows_file_actions.py",
+    # Platform helpers
+    "src/platform/shell_pwsh.py",
     # Updater
     "src/updater.py",
 ]

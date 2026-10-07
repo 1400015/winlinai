@@ -93,7 +93,7 @@ else:
     _BaseTray = object
 
 
-class QtTrayIcon(_BaseTray):
+class QtTrayIcon(_BaseTray):  # type: ignore[misc, valid-type]
     """System tray icon with drawer toggle on left click.
 
     Menu parity with the GTK tray: Show/Hide, Expert Mode (checkbox),
