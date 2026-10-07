@@ -329,7 +329,7 @@ class QtSettingsDialog(_BaseDialog):
     def _on_autostart_changed(self, state):
         from . import i18n
         from .windows_autostart import set_autostart, is_autostart_enabled, autostart_status_label
-        enabled = state == 2  # Qt.Checked
+        enabled = state == QtCore.Qt.Checked
         result = set_autostart(enabled)
         status = is_autostart_enabled()
         self.autostart_status.setText(
