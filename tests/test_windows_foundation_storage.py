@@ -31,7 +31,7 @@ class TestWindowsStorageRouting(unittest.TestCase):
     @contextmanager
     def backend(self, publication_error=None, lock_error=None):
         @contextmanager
-        def guard(path, create_parents=False):
+        def guard(path, create_parents=False, writable_parent=False):
             yield Path(path), None
 
         @contextmanager
@@ -134,7 +134,7 @@ class TestWindowsHandleContracts(unittest.TestCase):
                        SimpleNamespace(LOCKFILE_EXCLUSIVE_LOCK=2), file, None)
 
             @contextmanager
-            def guard(path, create_parents=False):
+            def guard(path, create_parents=False, writable_parent=False):
                 yield path, parent
 
             with patch.object(windows_files, '_modules', return_value=modules), \

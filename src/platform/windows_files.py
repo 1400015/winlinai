@@ -411,7 +411,7 @@ def sync_directory(path):
 def file_lock(path):
     """Lock a byte of a stable sidecar across processes, retaining its handle."""
     msvcrt, pywintypes, _, con, file, _ = _modules()
-    with guarded_path(path, create_parents=True) as (path, parent):
+    with guarded_path(path, create_parents=True, writable_parent=True) as (path, parent):
         _check_owned(parent)
         descriptor = open_regular(path, writable=True, create=True, private=True, deny_delete=True)
         handle = msvcrt.get_osfhandle(descriptor)
