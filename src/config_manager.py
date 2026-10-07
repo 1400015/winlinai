@@ -75,6 +75,11 @@ _THEME_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _ENCRYPTED_PREFIX = "fernet:v1:"
 _DOTENV_MAX_BYTES = 128 * 1024
 _API_KEY_ENV_RE = re.compile(r"^LINUX_AI_API_PROVIDERS_[A-Z0-9_]+_API_KEY$")
+_CONFIG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _windows_host():
+    return os.name == "nt"
 
 
 def _dotenv_identity(info):
@@ -83,6 +88,9 @@ def _dotenv_identity(info):
 
 def _read_owned_dotenv(path):
     """Read a bounded owned file and parent without following final links."""
+    if _windows_host():
+        from .platform.windows_files import read_owned_text
+        return read_owned_text(path, _DOTENV_MAX_BYTES)
     path = Path(path)
     parent_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     descriptor = None
@@ -329,15 +337,24 @@ class ConfigManager:
         Args:
             config_path: Path to the configuration file
         """
-        if config_path is None:
+        default_path = config_path is None
+        if default_path:
             # Default path: ~/.config/linux_ai_assistant/config.json
             config_dir = Path.home() / ".config" / "linux_ai_assistant"
             config_dir.mkdir(parents=True, exist_ok=True)
             config_path = str(config_dir / "config.json")
 
+        if _windows_host():
+            from .platform.windows_files import ensure_owned_directory, ensure_private_directory
+            # Only the application-owned default directory may have its ACL
+            # restricted. A custom path can belong to Documents or a checkout.
+            directory_policy = ensure_private_directory if default_path else ensure_owned_directory
+            directory_policy(Path(config_path).parent)
+
         self._dotenv_path = Path(config_path).parent / ".env"
         self._dotenv_empty_overrides = set()
         self._dotenv_source_identity = None
+        contents = None
         try:
             contents, identity = _read_owned_dotenv(self._dotenv_path)
             bindings = _dotenv_bindings(contents)
@@ -352,7 +369,14 @@ class ConfigManager:
             self._dotenv_source_identity = identity
         except (OSError, ValueError, UnicodeError):
             candidates = set()
-        load_dotenv(self._dotenv_path, override=False)
+            contents = None
+        if _windows_host():
+            # Load only the verified snapshot; a second path-based read could
+            # follow a reparse point or observe different dotenv assignments.
+            if contents is not None:
+                load_dotenv(stream=io.StringIO(contents), override=False)
+        else:
+            load_dotenv(self._dotenv_path, override=False)
         self._dotenv_empty_overrides = {name for name in candidates if os.environ.get(name) == ""}
         self.config_path = config_path
         self.config = {}
@@ -372,6 +396,8 @@ class ConfigManager:
             self._themes_dir = Path(sys.prefix) / "share" / "linux-ai-assistant" / "themes"
         self._load_config()
         self._validate_config()
+        if _windows_host() and self.last_save_error:
+            raise OSError("Windows configuration initialization could not persist its validated state")
         # Ensure a scheduled change is not lost on exit
         atexit.register(self.flush)
 
@@ -382,7 +408,12 @@ class ConfigManager:
             try:
                 from cryptography.fernet import Fernet
                 if key_path.exists():
-                    with open(key_path, 'rb') as f:
+                    if _windows_host():
+                        from .platform.windows_files import open_regular
+                        source = os.fdopen(open_regular(key_path, private=True, deny_write=True), 'rb')
+                    else:
+                        source = open(key_path, 'rb')
+                    with source as f:
                         key = f.read(1024)
                     Fernet(key)
                     self._encryption_key = key
@@ -395,7 +426,11 @@ class ConfigManager:
                         raise CredentialEncryptionError("The encryption key is missing; restore it before changing credentials.")
                     key = Fernet.generate_key()
                     key_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    if _windows_host():
+                        from .platform.windows_files import open_regular
+                        fd = open_regular(key_path, writable=True, create=True, exclusive=True, private=True)
+                    else:
+                        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                     with os.fdopen(fd, 'wb') as f:
                         f.write(key)
                         f.flush()
@@ -438,6 +473,8 @@ class ConfigManager:
 
     def _load_config(self):
         """Load configuration from file"""
+        if _windows_host():
+            return self._load_windows_config()
         try:
             if os.path.exists(self.config_path):
                 with open(self.config_path, 'r', encoding='utf-8') as f:
@@ -472,6 +509,36 @@ class ConfigManager:
             except OSError as backup_error:
                 logger.warning(f"Could not back up corrupt configuration: {backup_error}")
             self.save()
+
+    def _load_windows_config(self):
+        """Refuse unsafe Windows files instead of treating them as corrupt JSON."""
+        from .platform import windows_files
+        try:
+            descriptor = windows_files.open_regular(self.config_path, private=True, deny_write=True)
+        except FileNotFoundError:
+            self.config = self._get_default_config()
+            if not self.save():
+                raise OSError("The initial Windows configuration could not be saved safely")
+            return
+        with os.fdopen(descriptor, 'rb') as source:
+            raw = source.read(_CONFIG_MAX_BYTES + 1)
+        if len(raw) > _CONFIG_MAX_BYTES:
+            raise ValueError("Configuration exceeds the local size limit; original file preserved")
+        try:
+            data = json.loads(raw.decode('utf-8'))
+            if not isinstance(data, dict):
+                raise ValueError("Configuration must be a JSON object")
+        except (json.JSONDecodeError, UnicodeError, ValueError):
+            target = Path(self.config_path)
+            backup = target.with_name(target.name + '.corrupt-' + uuid.uuid4().hex)
+            # Only a verified private regular file reaches this recovery path.
+            windows_files.publish_temporary(target, backup)
+            logger.warning("Corrupt configuration backed up privately")
+            self.config = self._get_default_config()
+            if not self.save():
+                raise OSError("Configuration recovery could not save a fresh file; backup preserved")
+            return
+        self.config = data
 
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration
@@ -829,6 +896,8 @@ class ConfigManager:
         """
         temp_path = None
         with self._lock:
+            if _windows_host():
+                return self._save_windows_config()
             try:
                 target = Path(self.config_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -860,6 +929,43 @@ class ConfigManager:
                     except OSError:
                         pass
                 return False
+
+    def _save_windows_config(self) -> bool:
+        """Publish a private snapshot without applying Unix permission flags."""
+        from .platform import windows_files
+        from .storage import _LimitedWriter
+        temporary = None
+        published = False
+        try:
+            target = Path(self.config_path)
+            windows_files.ensure_owned_directory(target.parent)
+            descriptor, temporary = windows_files.private_temporary(target.parent, target.name + '.', '.tmp')
+            with os.fdopen(descriptor, 'w', encoding='utf-8', newline='\n') as stream:
+                json.dump(copy.deepcopy(self.config), _LimitedWriter(stream, _CONFIG_MAX_BYTES),
+                          indent=2, ensure_ascii=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            windows_files.publish_temporary(temporary, target)
+            published = True
+            temporary = None
+            windows_files.sync_publication(target)
+            self._dirty = False
+            self.last_save_error = None
+            return True
+        except (OSError, TypeError, ValueError) as error:
+            if isinstance(error, windows_files.FilePublicationCommittedError):
+                published = True
+                temporary = None
+            self.last_save_error = ("Configuration was published, but completion could not be confirmed"
+                                    if published else str(error))
+            logger.error("Windows configuration write failed (%s)", type(error).__name__)
+            return False
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     def reload(self):
         """Reload configuration from file
@@ -962,6 +1068,8 @@ class ConfigManager:
         cleared only after the private atomic replacement has succeeded.
         """
         name = self._env_name(f"api.providers.{provider}.api_key")
+        if _windows_host():
+            return self._remove_windows_empty_override(provider, name)
         parent_descriptor = None
         temporary_name = None
         with self._lock:
@@ -1017,6 +1125,59 @@ class ConfigManager:
                         pass
                 if parent_descriptor is not None:
                     os.close(parent_descriptor)
+
+    def _remove_windows_empty_override(self, provider, name):
+        """Retain dotenv provenance while using Windows handles and private ACLs."""
+        from .platform import windows_files
+        temporary = None
+        published = False
+        with self._lock:
+            try:
+                with windows_files.file_lock(str(self._dotenv_path) + '.lock'), windows_files.guarded_path(self._dotenv_path):
+                    if not self.can_remove_empty_api_key_override(provider):
+                        raise ValueError("The empty override could not be removed safely.")
+                    contents, identity = _read_owned_dotenv(self._dotenv_path)
+                    records = _dotenv_bindings(contents)
+                    target = [record for record in records if record.key == name]
+                    if identity != self._dotenv_source_identity or len(target) != 1 or target[0].value != "":
+                        raise ValueError("The empty override could not be removed safely.")
+                    replacement = "".join(record.original.string if record.key != name else
+                                          re.match(r"\s*", record.original.string).group(0)
+                                          for record in records).encode('utf-8')
+                    descriptor, temporary = windows_files.private_temporary(self._dotenv_path.parent, '.env.tmp-')
+                    with os.fdopen(descriptor, 'wb') as stream:
+                        stream.write(replacement)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    if windows_files.owned_identity(self._dotenv_path) != identity or os.environ.get(name) != "":
+                        raise ValueError("The empty override could not be removed safely.")
+                    try:
+                        windows_files.publish_temporary(temporary, self._dotenv_path, expected_identity=identity)
+                    except windows_files.FilePublicationCommittedError:
+                        logger.warning("The Windows environment edit was published, but handle cleanup could not be confirmed")
+                    temporary = None
+                    published = True
+                    # Publication succeeded; later identity/lock-close failures
+                    # must not leave the removed process placeholder effective.
+                    self._dotenv_empty_overrides.discard(name)
+                    if os.environ.get(name) == "":
+                        del os.environ[name]
+                    try:
+                        self._dotenv_source_identity = windows_files.owned_identity(self._dotenv_path)
+                    except (OSError, ValueError):
+                        self._dotenv_source_identity = None
+            except (OSError, ValueError, UnicodeError):
+                if published:
+                    self._dotenv_source_identity = None
+                    logger.warning("The Windows environment edit was published, but completion could not be confirmed")
+                else:
+                    raise ValueError("The empty override could not be removed safely.") from None
+            finally:
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary)
+                    except OSError:
+                        pass
 
     def get_stored_api_key(self, provider: str) -> str:
         """The key in the selected storage, ignoring environment overrides."""

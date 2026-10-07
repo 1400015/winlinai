@@ -11,6 +11,8 @@ import signal
 import logging
 import argparse
 
+GTK_IMPORT_ERROR = None
+
 try:
     import gi
     gi.require_version('Gtk', '3.0')
@@ -32,12 +34,6 @@ logger = logging.getLogger(__name__)
 from .config_manager import ConfigManager
 from .ai_client import AIClient
 from .system_utils import SystemUtils
-
-# `main_window`/`tray_icon` so devem ser importados quando o GTK existe: caso
-# contrario `Gtk.init()` rebentaria com um AttributeError pouco claro.
-if GTK_AVAILABLE:
-    from .main_window import MainWindow
-    from .tray_icon import TrayIcon
 
 from . import i18n
 
@@ -84,6 +80,10 @@ class LinuxAIAssistant:
         startup_history = None
 
         try:
+            # Keep the Qt entry point free of GTK window imports, including
+            # on Linux when both bindings are installed.
+            from .main_window import MainWindow
+            from .tray_icon import TrayIcon
             # Initialize GTK. init_check() reports failure (e.g. no
             # DISPLAY) instead of aborting the process like init() does.
             from .desktop_icons import configure_desktop_identity, configure_application_icon
@@ -327,6 +327,13 @@ def main(argv=None):
     from . import setup_file_logging
     setup_file_logging()
 
+    from .platform.ui_selection import select_ui_track
+    if select_ui_track(args.ui) == 'qt':
+        # Qt owns configuration startup so failures return a clear error and
+        # exit status through the same path as its backend startup failures.
+        from .qt_app import run as run_qt
+        return run_qt()
+
     if not GTK_AVAILABLE:
         message = (
             "GTK 3 is not available. Install the system bindings:\n"
@@ -339,15 +346,6 @@ def main(argv=None):
         )
         print(f"\nError: {GTK_IMPORT_ERROR}\n\n{message}", file=sys.stderr)
         return 1
-
-    from .platform.ui_selection import select_ui_track
-    if select_ui_track(args.ui) == 'qt':
-        # Auto selects Qt on the Windows host (GTK is absent there) and GTK
-        # on Linux, where the mature track keeps its users; --ui overrides.
-        from .qt_app import run as run_qt
-        if run_qt(ConfigManager()) != 0:
-            return 1
-        return 0
 
     activation = None
     try:

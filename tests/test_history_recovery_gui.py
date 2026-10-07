@@ -367,7 +367,7 @@ class HistoryStartupExitGtkTests(unittest.TestCase):
         result = self.recovery.HistoryRecoveryResult("cancelled", error=ValueError("future"))
         with patch.object(self.Gtk, "init_check", return_value=(True, [])), \
                 patch.object(self.recovery, "open_history_store", return_value=result), \
-                patch.object(self.app_module, "MainWindow") as window:
+                patch("src.main_window.MainWindow") as window:
             self.assertEqual(app.run(), 1)
         window.assert_not_called()
         app.quit.assert_called_once()
@@ -381,8 +381,8 @@ class HistoryStartupExitGtkTests(unittest.TestCase):
         with patch.object(self.Gtk, "init_check", return_value=(True, [])), \
                 patch.object(self.Gtk, "main"), \
                 patch.object(self.recovery, "open_history_store", return_value=result), \
-                patch.object(self.app_module, "MainWindow", return_value=window) as constructor, \
-                patch.object(self.app_module, "TrayIcon"):
+                patch("src.main_window.MainWindow", return_value=window) as constructor, \
+                patch("src.tray_icon.TrayIcon"):
             self.assertEqual(app.run(), 0)
         self.assertIs(constructor.call_args.kwargs["history_store"], store)
         self.assertIn(str(backup), window._add_system_message.call_args.args[0])
@@ -394,7 +394,7 @@ class HistoryStartupExitGtkTests(unittest.TestCase):
         result = self.recovery.HistoryRecoveryResult("ready", store=store)
         with patch.object(self.Gtk, "init_check", return_value=(True, [])), \
                 patch.object(self.recovery, "open_history_store", return_value=result), \
-                patch.object(self.app_module, "MainWindow", side_effect=RuntimeError("constructor failed")):
+                patch("src.main_window.MainWindow", side_effect=RuntimeError("constructor failed")):
             self.assertEqual(app.run(), 1)
         store.close.assert_called_once()
         app.quit.assert_called_once()

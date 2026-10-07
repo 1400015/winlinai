@@ -1,11 +1,14 @@
-"""Linux subprocess output with a retained-output cap and a deadline.
+"""Subprocess output with a retained-output cap and a deadline.
 
 The child process's own RAM is not limited. Output is consumed directly from
-pipes, with no unbounded temporary file. Group cleanup is attempted; an
+pipes, with no unbounded temporary file. Windows delegates to a Job Object
+backend that starts the child suspended before assigning it to the job.
+
+On Linux, group cleanup is attempted; an
 elevated child may refuse the caller's signal, so timeout is not proof of
 cancellation or rollback.
 
-The leader is observed without reaping before group cleanup. This keeps its
+The Linux leader is observed without reaping before group cleanup. This keeps its
 PID reserved even after exit, so cleanup cannot address a reused group ID.
 run_bounded owns reaping; a detected external reap disables group signalling.
 """
@@ -15,6 +18,7 @@ import math
 import selectors
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -198,6 +202,10 @@ def run_bounded(argv, timeout, limit, env=None):
         raise ValueError('timeout must be positive and finite')
     if type(limit) is not int or limit <= 0:
         raise ValueError('output limit must be a positive integer')
+    if sys.platform == 'win32':
+        # Import lazily: the Linux executor never needs Windows APIs.
+        from .platform.windows_process import run_bounded as run_windows
+        return run_windows(argv, timeout, limit, env=env)
     process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True, env=env)
     selector = None

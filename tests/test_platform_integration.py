@@ -21,12 +21,22 @@ class TestProbeArgvFor(unittest.TestCase):
             return False
         self.assertIsNone(probe_argv_for("links", platform=WINDOWS, validate_pwsh=reject))
 
-    def test_wsl_probe_wraps_posix_inner_command(self):
-        argv = probe_argv_for("disk", platform=WSL, wsl_distro="Ubuntu")
+    def test_windows_probe_with_explicit_distro_wraps_posix_inner_command(self):
+        argv = probe_argv_for("disk", platform=WINDOWS, wsl_distro="Ubuntu")
         self.assertEqual(argv, ("wsl.exe", "--distribution", "Ubuntu", "--exec", "df", "-h"))
 
-    def test_wsl_probe_without_distro_is_none(self):
-        self.assertIsNone(probe_argv_for("disk", platform=WSL, wsl_distro=None))
+    def test_wsl_probe_is_native_with_or_without_a_distro(self):
+        for distro in (None, "Ubuntu", "another-distro", "--exec"):
+            with self.subTest(distro=distro):
+                self.assertEqual(probe_argv_for("disk", platform=WSL, wsl_distro=distro), ("df", "-h"))
+
+    def test_unsupported_windows_inodes_returns_none(self):
+        self.assertIsNone(probe_argv_for("inodes", platform=WINDOWS))
+
+    def test_invalid_explicit_windows_destination_never_falls_back_to_host(self):
+        for distro in ("", "--exec", "Ubuntu;wsl"):
+            with self.subTest(distro=distro):
+                self.assertIsNone(probe_argv_for("disk", platform=WINDOWS, wsl_distro=distro))
 
     def test_linux_keeps_none_and_native_path(self):
         self.assertIsNone(probe_argv_for("links", platform="linux"))
@@ -49,7 +59,8 @@ class TestSystemUtilsPlatformPath(unittest.TestCase):
             ok, output = utils.execute_command(["powershell", "-Command", "Get-NetAdapter"], timeout=5)
         self.assertTrue(ok)
         self.assertIn("InterfaceDescription", output)
-        self.assertEqual(captured["argv"][0], "powershell")
+        self.assertEqual(captured["argv"][:5],
+                         ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"))
 
     def test_mutation_cmdlet_is_rejected(self):
         with patch("src.platform.detect_platform", return_value="windows"):
@@ -72,6 +83,29 @@ class TestSystemUtilsPlatformPath(unittest.TestCase):
         ok, output = self.utils.execute_command(["powershell", "-Command", "Get-NetAdapter"])
         self.assertFalse(ok)
 
+    def test_platform_engines_are_denied_off_windows_even_if_config_allowlists_them(self):
+        self.utils.config.get = Mock(return_value=["powershell", "wsl.exe", "pwsh"])
+        with patch("src.system_utils.run_bounded") as run:
+            for host in ("linux", WSL):
+                with patch("src.platform.detect_platform", return_value=host):
+                    for command in (["powershell", "-Command", "Get-NetAdapter"],
+                                    ["wsl.exe", "--distribution", "Ubuntu", "--exec", "df", "-h"],
+                                    ["pwsh", "-Command", "Remove-Item x"]):
+                        with self.subTest(host=host, command=command):
+                            self.assertFalse(self.utils.execute_command(command)[0])
+            run.assert_not_called()
+
+    def test_external_powershell_launch_options_are_rejected(self):
+        with patch("src.platform.detect_platform", return_value=WINDOWS), \
+                patch("src.system_utils.run_bounded") as run:
+            for command in (["powershell", "-NoProfile", "-Command", "Get-NetAdapter"],
+                            ["powershell", "-EncodedCommand", "anything"],
+                            ["powershell.exe", "-Command", "Get-NetAdapter"],
+                            ["powershell", "-Command", "Get-NetAdapter", ""]):
+                with self.subTest(command=command):
+                    self.assertFalse(self.utils.execute_command(command)[0])
+            run.assert_not_called()
+
     def test_wsl_probe_with_validated_inner_command_runs(self):
         utils = self.utils
         def fake_run(argv, timeout, limit):
@@ -87,6 +121,35 @@ class TestSystemUtilsPlatformPath(unittest.TestCase):
             ok, output = self.utils.execute_command(
                 ["wsl.exe", "--distribution", "Ubuntu", "--exec", "bash", "-c", "id"])
         self.assertFalse(ok)
+
+    def test_wsl_rejects_mutations_and_arbitrary_files_without_execution(self):
+        with patch("src.platform.detect_platform", return_value=WINDOWS), \
+                patch("src.system_utils.run_bounded") as run:
+            for inner in (["rm", "-rf", "/tmp/x"], ["touch", "/tmp/x"],
+                          ["curl", "https://example.com"], ["cat", "/etc/shadow"],
+                          ["df", "-h", "/private"]):
+                with self.subTest(inner=inner):
+                    command = ["wsl.exe", "--distribution", "Ubuntu", "--exec", *inner]
+                    self.assertFalse(self.utils.execute_command(command)[0])
+            run.assert_not_called()
+
+    def test_wsl_rejects_noncanonical_wrapper_options_and_empty_arguments(self):
+        with patch("src.platform.detect_platform", return_value=WINDOWS), \
+                patch("src.system_utils.run_bounded") as run:
+            for command in (["wsl.exe", "--Distribution", "Ubuntu", "--exec", "df", "-h"],
+                            ["wsl.exe", "--distribution", "Ubuntu", "--EXEC", "df", "-h"],
+                            ["wsl.exe", "--distribution", "Ubuntu", "", "--exec", "df", "-h"]):
+                with self.subTest(command=command):
+                    self.assertFalse(self.utils.execute_command(command)[0])
+            run.assert_not_called()
+
+    def test_platform_runner_also_enforces_host_and_probe_policy(self):
+        with patch("src.system_utils.run_bounded") as run:
+            for host, command in ((WSL, ["powershell", "-Command", "Get-NetAdapter"]),
+                                  (WINDOWS, ["powershell", "-Command", "Remove-Item", "-Path", "x"])):
+                with self.subTest(host=host), patch("src.platform.detect_platform", return_value=host):
+                    self.assertFalse(self.utils._run_platform_probe(command, timeout=3)[0])
+            run.assert_not_called()
 
     def test_wsl_probe_with_wrong_wrapper_tokens_is_rejected(self):
         # A middle token must never become the wsl.exe subcommand.
@@ -129,11 +192,17 @@ class TestOfflineAssistantPlatformProbe(unittest.TestCase):
                          ["powershell", "-Command", "Get-NetAdapter"])
         self.assertEqual(result, "UP  eth0")
 
-    def test_wsl_probe_wraps_posix_command(self):
+    def test_wsl_probe_runs_native_posix_command(self):
         assistant, utils = self.assistant(platform=WSL, wsl="Ubuntu")
         assistant._probe("disk")
         self.assertEqual(utils.execute_command.call_args[0][0],
-                         ["wsl.exe", "--distribution", "Ubuntu", "--exec", "df", "-h"])
+                         ["df", "-h"])
+
+    def test_windows_inodes_probe_is_unavailable_without_execution(self):
+        assistant, utils = self.assistant(platform=WINDOWS)
+        utils.execute_command.reset_mock()
+        self.assertIsNone(assistant._probe("inodes"))
+        utils.execute_command.assert_not_called()
 
     def test_windows_probe_without_utils_returns_none(self):
         assistant, _ = self.assistant(platform=WINDOWS)

@@ -22,6 +22,15 @@ from .log_privacy import redact_command
 MAX_COMMAND_OUTPUT = 1_000_000
 
 
+def _windows_is_admin():
+    """Observe Windows elevation without requesting it or assuming Unix APIs."""
+    import ctypes
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
 def _run_process(argv, timeout=5):
     """Read bounded output with a deadline and process-group cleanup."""
     code, stdout, stderr = run_bounded(argv, timeout, MAX_COMMAND_OUTPUT)
@@ -108,10 +117,11 @@ class SystemUtils:
         self.is_wayland = (os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
                            or bool(os.environ.get('WAYLAND_DISPLAY') or os.environ.get('SWAYSOCK')))
         self.is_x11 = os.environ.get("DISPLAY") is not None
-        self.is_root = os.geteuid() == 0
+        self.is_root = _windows_is_admin() if os.name == 'nt' else os.geteuid() == 0
         self.username = getpass.getuser()
 
-        logger.info(f"Environment detected: {'Wayland' if self.is_wayland else 'X11'}")
+        desktop = 'Windows' if os.name == 'nt' else 'Wayland' if self.is_wayland else 'X11'
+        logger.info("Environment detected: %s", desktop)
         logger.info(f"User: {self.username}, Root: {self.is_root}")
 
     def _sanitize_command(self, command: str) -> List[str]:
@@ -312,8 +322,8 @@ class SystemUtils:
             Tuple (success, output).
         """
         if isinstance(command, (list, tuple)):
-            cmd_parts = [str(part) for part in command if str(part).strip()]
-            if not cmd_parts:
+            cmd_parts = [str(part) for part in command]
+            if not cmd_parts or any(not part.strip() for part in cmd_parts):
                 logger.error("Invalid command (empty argv)")
                 return False, "Invalid command"
         elif isinstance(command, str) and command.strip():
@@ -331,18 +341,16 @@ class SystemUtils:
 
         cmd_base = cmd_parts[0]
 
-        # Platform probes: read-only PowerShell cmdlets or wrapped WSL
-        # probes bypass the POSIX allowlist only after passing their own
-        # dedicated policy (allowlisted cmdlet, safe operands / re-validated
-        # inner command). They remain read-only diagnostics.
-        if cmd_base.lower() in ("powershell", "wsl.exe"):
-            # The bypass is scoped to the Windows host track: elsewhere these
-            # binaries fall through to the normal allowlist like any command.
+        # Platform execution engines never inherit permission from the
+        # editable POSIX allowlist. Windows admits only validated probes;
+        # inside WSL the assistant uses native POSIX commands instead.
+        if cmd_base.lower() in ("powershell", "powershell.exe", "pwsh", "pwsh.exe", "wsl", "wsl.exe"):
             from .platform import WINDOWS, detect_platform
-            if detect_platform() == WINDOWS:
-                if not self._validate_platform_probe(cmd_parts):
-                    return False, f"Platform probe rejected: {cmd_base}"
-                return self._run_platform_probe(cmd_parts, timeout)
+            if detect_platform() != WINDOWS:
+                return False, f"Command not allowed: {cmd_base}"
+            if not self._validate_platform_probe(cmd_parts):
+                return False, f"Platform probe rejected: {cmd_base}"
+            return self._run_platform_probe(cmd_parts, timeout)
 
         # Check if the command is allowed
         if cmd_base not in self.allowed_commands:
@@ -377,7 +385,7 @@ class SystemUtils:
 
     def _validate_platform_probe(self, cmd_parts):
         """Positive validation for platform probe argv: PowerShell cmdlets
-        or WSL-wrapped inner commands must pass their dedicated policy."""
+        or catalogue probes in an explicitly selected WSL distro."""
         try:
             base = str(cmd_parts[0]).lower()
             if base == "powershell":
@@ -391,20 +399,27 @@ class SystemUtils:
                 # exactly --distribution <name> --exec <inner...>. Anything else
                 # would let a middle token become the wsl.exe subcommand.
                 if (len(cmd_parts) < 5
-                        or str(cmd_parts[1]).lower() != "--distribution"
-                        or str(cmd_parts[3]).lower() != "--exec"):
+                        or cmd_parts[1] != "--distribution"
+                        or cmd_parts[3] != "--exec"):
                     return False
                 from .platform.wsl_bridge import probe_argv as wsl_probe
-                return wsl_probe(str(cmd_parts[2]), cmd_parts[4:]) is not None
+                return wsl_probe(cmd_parts[2], cmd_parts[4:]) is not None
         except Exception:
             return False
         return False
 
     def _run_platform_probe(self, cmd_parts, timeout):
-        """Run an already-validated platform probe with bounded output."""
+        """Run a validated platform probe with bounded UTF-8 output."""
         try:
+            from .platform import WINDOWS, detect_platform
+            if detect_platform() != WINDOWS or not self._validate_platform_probe(cmd_parts):
+                return False, "Platform probe rejected"
+            argv = cmd_parts
+            if str(cmd_parts[0]).lower() == "powershell":
+                from .platform.shell_pwsh import launch_argv
+                argv = launch_argv(cmd_parts[2:])
             logger.info("Running platform probe: %s", redact_command(cmd_parts))
-            returncode, stdout, stderr = run_bounded(cmd_parts, timeout, MAX_COMMAND_OUTPUT)
+            returncode, stdout, stderr = run_bounded(argv, timeout, MAX_COMMAND_OUTPUT)
             if returncode == 0:
                 return True, stdout
             return False, stderr or stdout
@@ -416,7 +431,10 @@ class SystemUtils:
             return False, message
         except Exception as e:
             logger.error("Error running platform probe (%s)", type(e).__name__)
-            return False, "Error running platform probe"
+            message = "Error running platform probe"
+            if getattr(e, 'cleanup_uncertainty', None):
+                message += ' ' + CLEANUP_UNCERTAINTY
+            return False, message
 
     def read_file(self, filepath: str, max_lines: int = 100) -> Tuple[bool, str]:
         """

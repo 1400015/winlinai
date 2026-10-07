@@ -14,12 +14,12 @@ from pathlib import Path
 import queue
 import shutil
 import stat
-import tempfile
 import threading
 import time
 import uuid
 
-from .storage import JsonLimitError, atomic_json_write, json_lock, read_json, update_json
+from .storage import (JsonLimitError, atomic_json_write, json_lock, open_regular,
+                      private_temporary, read_json, sync_directory, update_json)
 from .task_state import validate_task_state
 from .conversation_markdown import PREFIX as MARKDOWN_PREFIX, export_markdown, import_markdown
 
@@ -242,12 +242,12 @@ class HistoryStore:
         complete = False
         try:
             with json_lock(path):
-                source_fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                source_fd = open_regular(path)
                 with os.fdopen(source_fd, "rb") as source:
                     original = os.fstat(source.fileno())
                     if not stat.S_ISREG(original.st_mode):
                         raise ValueError("History recovery requires a regular file")
-                    backup_fd, name = tempfile.mkstemp(prefix=path.name + ".recovered-", dir=str(path.parent))
+                    backup_fd, name = private_temporary(path.parent, path.name + ".recovered-")
                     backup = Path(name)
                     with os.fdopen(backup_fd, "wb") as target:
                         shutil.copyfileobj(source, target, 65536)
@@ -257,11 +257,7 @@ class HistoryStore:
                     if (_file_identity(original) != _file_identity(current)
                             or _file_identity(original) != _file_identity(os.fstat(source.fileno()))):
                         raise OSError("History changed during recovery; original file preserved")
-                    directory_fd = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+                    sync_directory(path.parent)
                     complete = True
                     atomic_json_write(path, document, max_bytes=MAX_HISTORY_BYTES)
         except BaseException as error:

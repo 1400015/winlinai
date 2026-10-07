@@ -6,8 +6,9 @@ per-command flag/parameter validation, with an explicit denylist of
 engine- and mutation-shaped cmdlets. The policy only *validates*; it never
 executes anything.
 """
+import base64
 import re
-from typing import Iterable
+from typing import Iterable, Optional, Tuple
 
 # Cmdlets that run arbitrary code, mutate state or reach the network.
 UNSAFE_PWSH = {
@@ -59,7 +60,7 @@ ALLOWED_PWSH = {
 VALUE_PARAMS = {
     'get-netadapter': {'name'},
     'get-netipconfiguration': {'interfacealias'},
-    'get-dnsclientserveraddress': {'interfacealias'},
+    'get-dnsclientserveraddress': {'interfacealias', 'addressfamily'},
     'get-service': {'name', 'displayname'},
     'get-process': {'name', 'id'},
     'get-psdrive': {'name'},
@@ -81,7 +82,6 @@ VALUE_PARAMS = {
 # Boolean switches (never take a value). Presence alone is safe.
 SWITCH_PARAMS = {
     'get-netipconfiguration': {'detailed'},
-    'get-dnsclientserveraddress': {'addressfamily'},
     'get-executionpolicy': {'list'},
     'get-module': {'listavailable'},
 }
@@ -103,7 +103,7 @@ def validate_pwsh_arguments(argv: Iterable[str]) -> bool:
     token anywhere rejects the whole invocation.
     """
     arguments = tuple(argv)
-    if not arguments or len(arguments) > MAX_ARGV:
+    if not arguments or len(arguments) > MAX_ARGV or not all(isinstance(argument, str) for argument in arguments):
         return False
     command = arguments[0].lower()
     if not NAME_PATTERN.fullmatch(arguments[0]):
@@ -119,9 +119,9 @@ def validate_pwsh_arguments(argv: Iterable[str]) -> bool:
     while index < len(arguments):
         argument = arguments[index]
         index += 1
-        if not argument.startswith('-'):
+        if not argument.startswith('-') or not NAME_PATTERN.fullmatch(argument[1:]):
             return False
-        name = argument.lstrip('-').lower()
+        name = argument[1:].lower()
         if name in switches:
             continue
         if name not in values:
@@ -133,3 +133,24 @@ def validate_pwsh_arguments(argv: Iterable[str]) -> bool:
         if not VALUE_PATTERN.fullmatch(value):
             return False
     return True
+
+
+def launch_argv(argv: Iterable[str]) -> Optional[Tuple[str, ...]]:
+    """Build a non-interactive PowerShell process for a validated cmdlet.
+
+    The caller supplies a cmdlet argv, never a script. Only this fixed
+    wrapper controls encoding and execution; quotes around operand values
+    keep wildcards, commas and backslashes as data in the generated script.
+    ``run_bounded`` decodes UTF-8, including Windows PowerShell 5.1 output.
+    """
+    arguments = tuple(argv)
+    if not validate_pwsh_arguments(arguments):
+        return None
+    invocation = " ".join(
+        argument if index == 0 or argument.startswith('-') else "'" + argument + "'"
+        for index, argument in enumerate(arguments))
+    script = ("$ErrorActionPreference = 'Stop'; "
+              "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+              "$OutputEncoding = [Console]::OutputEncoding; " + invocation)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)

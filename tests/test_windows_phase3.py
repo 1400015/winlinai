@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from src.knowledge_loader import available_bundled_modules, compose_modules
 from src.local_knowledge import PROCEDURE_BY_ID
-from src.platform.shell_pwsh import validate_pwsh_arguments as validate_pwsh
+from src.platform.shell_pwsh import launch_argv, validate_pwsh_arguments as validate_pwsh
 from src.platform.wsl_bridge import detect_wsl_distros, parse_wsl_list, probe_argv
 
 
@@ -26,6 +26,13 @@ class TestWslListParsing(unittest.TestCase):
         output = "NAME STATE VERSION\n* ok Running 2\nbad!name Running 2\n"
         records = parse_wsl_list(output)
         self.assertEqual([record["name"] for record in records], ["ok"])
+
+    def test_parses_utf8_and_utf16_without_bom(self):
+        output = "NAME STATE VERSION\n* Ubuntu Running 2\n"
+        for encoding in ("utf-8", "utf-16-le"):
+            with self.subTest(encoding=encoding):
+                records = parse_wsl_list(output.encode(encoding))
+                self.assertEqual(records[0]["name"], "Ubuntu")
 
     def test_empty_output_yields_no_records(self):
         self.assertEqual(parse_wsl_list(""), ())
@@ -62,6 +69,34 @@ class TestWslProbeArgv(unittest.TestCase):
     def test_empty_inner_command_is_rejected(self):
         self.assertIsNone(probe_argv("Ubuntu", []))
 
+    def test_mutations_and_arbitrary_reads_never_cross_the_bridge(self):
+        for command in (["rm", "-rf", "/tmp/x"], ["touch", "/tmp/x"],
+                        ["curl", "https://example.com"], ["cat", "/etc/shadow"],
+                        ["df", "-h", "/private"], ["free", "-h", "-s", "1"],
+                        ["ip", "link", "set", "eth0", "down"],
+                        ["/usr/bin/df", "-h"]):
+            with self.subTest(command=command):
+                self.assertIsNone(probe_argv("Ubuntu", command))
+                # Even a permissive injected argument policy cannot turn
+                # the bridge into an execution engine or a file reader.
+                self.assertIsNone(probe_argv(
+                    "Ubuntu", command, validate_arguments=lambda argv, path: True))
+
+    def test_optional_validator_only_narrows_catalogue(self):
+        self.assertIsNone(probe_argv(
+            "Ubuntu", ["df", "-h"], validate_arguments=lambda argv, path: False))
+        def no_path_access(argv, path):
+            self.assertFalse(path("/etc/shadow"))
+            return True
+        self.assertIsNotNone(probe_argv(
+            "Ubuntu", ["df", "-h"], validate_arguments=no_path_access))
+
+    def test_native_probe_catalogue_is_supported(self):
+        from src.platform.probes import POSIX_PROBES
+        for command in POSIX_PROBES.values():
+            with self.subTest(command=command):
+                self.assertIsNotNone(probe_argv("Ubuntu", command))
+
 
 class TestPowerShellPolicy(unittest.TestCase):
     def test_read_only_cmdlets_are_allowed(self):
@@ -69,6 +104,8 @@ class TestPowerShellPolicy(unittest.TestCase):
         self.assertTrue(validate_pwsh(["Get-Service", "-Name", "wuauserv"]))
         self.assertTrue(validate_pwsh(["Get-WinEvent", "-LogName", "System", "-MaxEvents", "50"]))
         self.assertTrue(validate_pwsh(["Get-ExecutionPolicy", "-List"]))
+        self.assertTrue(validate_pwsh(["Get-DnsClientServerAddress", "-AddressFamily", "IPv4"]))
+        self.assertFalse(validate_pwsh(["Get-DnsClientServerAddress", "-AddressFamily"]))
 
     def test_file_reading_cmdlets_are_rejected(self):
         # They bypass the allowed_edit_dirs sandbox; no probe needs them.
@@ -106,9 +143,23 @@ class TestPowerShellPolicy(unittest.TestCase):
         self.assertFalse(validate_pwsh(["Get-Service", "-Name"]))
         self.assertFalse(validate_pwsh(["Not-A-Cmdlet"]))
         self.assertFalse(validate_pwsh([]))
+        self.assertFalse(validate_pwsh(["Get-Service", "--Name", "wuauserv"]))
+        self.assertFalse(validate_pwsh(["Get-Service", None]))
 
     def test_argv_size_is_bounded(self):
         self.assertFalse(validate_pwsh(["Get-Service"] + ["-Name"] * 40))
+
+    def test_launcher_accepts_cmdlet_arguments_and_refuses_scripts(self):
+        import base64
+        argv = launch_argv(["Get-Service", "-Name", "wuauserv"])
+        self.assertEqual(argv[:5],
+                         ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"))
+        script = base64.b64decode(argv[5]).decode("utf-16-le")
+        self.assertIn("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)", script)
+        self.assertIn("$OutputEncoding = [Console]::OutputEncoding", script)
+        self.assertTrue(script.endswith("Get-Service -Name 'wuauserv'"))
+        self.assertIsNone(launch_argv(["Remove-Item", "-Path", "x"]))
+        self.assertIsNone(launch_argv(["Get-Service; Remove-Item x"]))
 
 
 class TestPhase3KnowledgeModules(unittest.TestCase):

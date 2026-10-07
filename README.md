@@ -1,6 +1,8 @@
 # WinLinAI
 
-The **Linux AI Assistant with the Windows/Qt track** — platform detection (Windows/WSL/Linux), offline PowerShell/WSL/Kali knowledge, diagnostic probes through a PowerShell policy and a WSL bridge, and a Qt UI with tray toggle and Windows autostart via the Registry, while keeping the GTK track intact for Linux (`--ui auto|gtk|qt`).
+The **Linux AI Assistant with an experimental Windows/Qt track** — shared offline knowledge and conversation storage, with platform selection (`--ui auto|gtk|qt`). The Linux GTK application remains the established track. Windows development currently focuses on reliable Qt startup, native persistence, bounded diagnostic processes and installing the complete Python package.
+
+On Windows, the Qt chat currently uses bundled offline assistance. The feature list below describes the Linux GTK application; it does not imply Windows parity. Provider integration, tray/autostart, diagnostics and installation still need the platform-specific acceptance checks described in the [Windows foundation guide](docs/windows-foundation.md).
 
 A permanent AI assistant with a floating interface, integration with several AI APIs, screen capture, expert mode and more.
 
@@ -195,6 +197,21 @@ sudo pacman -S python python-pip git scrot tesseract tesseract-data-por tesserac
 See [requirements.txt](requirements.txt)
 
 ## Installation
+
+### Windows: experimental Qt foundation
+
+Use Python 3.12 and Git, then run these commands in PowerShell:
+
+```powershell
+git clone https://github.com/1400015/winlinai.git
+cd winlinai
+py -3.12 -m venv venv
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install ".[qt]"
+.\venv\Scripts\python.exe -m src.app --ui qt
+```
+
+GTK is not required for Qt. `--ui auto` also selects Qt on native Windows. Run the application as your normal user. This source-installation procedure is the supported development path for this milestone; the existing Windows installer and autostart scripts have not completed acceptance validation. See the [Windows foundation guide](docs/windows-foundation.md) for tests and current limits.
 
 ### Method 1: Automatic Installation
 

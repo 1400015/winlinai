@@ -1,4 +1,4 @@
-"""Run every test with GTK; unavailable GUI classes must not make CI green."""
+"""Run the Linux/GTK suite; unavailable GTK classes must not make CI green."""
 
 from pathlib import Path
 import sys
@@ -18,6 +18,22 @@ def unexpected_skips(result):
             if test.id() not in EXPECTED_SKIPS or reason != 'GTK is available in this environment']
 
 
+def discover_gtk_suite(test_directory, loader=None):
+    """Keep Qt and the native Windows foundation in their dedicated jobs.
+
+    The headless Linux job still discovers every module, including optional
+    dependency contracts. Avoid importing native Windows test modules in the
+    GTK gate: their platform skips are deliberate, not missing GTK coverage.
+    """
+    loader = loader or unittest.defaultTestLoader
+    suite = unittest.TestSuite()
+    for path in sorted(Path(test_directory).glob('test_*.py')):
+        if path.name.startswith(('test_qt_', 'test_windows_foundation')):
+            continue
+        suite.addTests(loader.discover(str(test_directory), pattern=path.name))
+    return suite
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
@@ -32,7 +48,7 @@ def main():
     except (ImportError, ValueError, RuntimeError) as error:
         print('GTK preflight failed: ' + str(error), file=sys.stderr)
         return 1
-    suite = unittest.defaultTestLoader.discover(str(root / 'tests'))
+    suite = discover_gtk_suite(root / 'tests')
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     skipped = unexpected_skips(result)
     for identifier, reason in skipped:

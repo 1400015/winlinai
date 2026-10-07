@@ -1,4 +1,4 @@
-"""Atomic JSON transactions shared by the Linux GUI and CLI."""
+"""Atomic JSON transactions shared by the desktop interfaces and CLI."""
 
 from contextlib import contextmanager
 import json
@@ -7,6 +7,63 @@ from pathlib import Path
 import shutil
 import stat
 import tempfile
+
+
+_WINDOWS = os.name == 'nt'
+
+
+def open_regular(path):
+    """Open a regular input without following final links or blocking on a FIFO."""
+    if _WINDOWS:
+        from .platform.windows_files import open_regular as windows_open
+        return windows_open(path)
+    return os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+
+
+def private_temporary(parent, prefix, suffix=''):
+    if _WINDOWS:
+        from .platform.windows_files import private_temporary as windows_temporary
+        return windows_temporary(parent, prefix, suffix)
+    return tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=str(parent))
+
+
+def sync_directory(path):
+    if _WINDOWS:
+        from .platform.windows_files import sync_directory as windows_sync
+        windows_sync(path)
+        return
+    directory_fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+@contextmanager
+def _guard_write(path):
+    if _WINDOWS:
+        from .platform.windows_files import guarded_path
+        with guarded_path(path, create_parents=True):
+            yield
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        yield
+
+
+def _publish_temporary(source, path):
+    if _WINDOWS:
+        from .platform.windows_files import publish_temporary
+        publish_temporary(source, path)
+    else:
+        os.replace(source, path)
+
+
+def _sync_publication(path):
+    if _WINDOWS:
+        from .platform.windows_files import sync_publication
+        sync_publication(path)
+    else:
+        sync_directory(path.parent)
 
 
 class JsonLimitError(ValueError):
@@ -41,15 +98,15 @@ class _NestingGuard:
 
 
 def read_json(path, max_bytes=None):
-    if max_bytes is None:
+    if max_bytes is None and not _WINDOWS:
         with Path(path).open(encoding='utf-8') as stream:
             return json.load(stream)
-    descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    descriptor = open_regular(path)
     with os.fdopen(descriptor, 'rb') as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError('Bounded JSON input must be a regular file')
-        raw = stream.read(max_bytes + 1)
-    if len(raw) > max_bytes:
+        raw = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+    if max_bytes is not None and len(raw) > max_bytes:
         raise JsonLimitError('JSON exceeds the {} byte limit; original file preserved'.format(max_bytes))
     _NestingGuard().feed(raw)
     try:
@@ -87,9 +144,14 @@ class JsonWriteCommittedError(OSError):
 @contextmanager
 def json_lock(path):
     # Lock a stable sidecar, not the inode replaced by each transaction.
+    path = Path(path)
+    if _WINDOWS:
+        from .platform.windows_files import file_lock
+        with file_lock(str(path) + '.lock'):
+            yield
+        return
     import fcntl
 
-    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -103,37 +165,41 @@ def atomic_json_write(path, value, max_bytes=None):
     path = Path(path)
     published = False
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=str(path.parent))
-        write_error = None
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                target = _LimitedWriter(stream, max_bytes) if max_bytes is not None else stream
-                json.dump(value, target, indent=2, ensure_ascii=False)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-            published = True
-            # The name no longer belongs to this write. Cleanup must not remove
-            # an unrelated file created at the old temporary path after rename.
-            temporary = None
-            directory_fd = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
+        with _guard_write(path):
+            fd, temporary = private_temporary(path.parent, path.name + '.', '.tmp')
+            write_error = None
             try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except BaseException as error:
-            write_error = error
-            raise
-        finally:
-            if temporary is not None:
+                with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
+                    target = _LimitedWriter(stream, max_bytes) if max_bytes is not None else stream
+                    json.dump(value, target, indent=2, ensure_ascii=False)
+                    stream.flush()
+                    os.fsync(stream.fileno())
                 try:
-                    if os.path.exists(temporary):
-                        os.unlink(temporary)
-                except OSError as cleanup_error:
-                    if write_error is None:
-                        raise
-                    write_error.temporary_cleanup_error = cleanup_error
+                    _publish_temporary(temporary, path)
+                except OSError as error:
+                    if _WINDOWS:
+                        from .platform.windows_files import FilePublicationCommittedError
+                        if isinstance(error, FilePublicationCommittedError):
+                            published = True
+                            temporary = None
+                    raise
+                published = True
+                # The name no longer belongs to this write. Cleanup must not remove
+                # an unrelated file created at the old temporary path after rename.
+                temporary = None
+                _sync_publication(path)
+            except BaseException as error:
+                write_error = error
+                raise
+            finally:
+                if temporary is not None:
+                    try:
+                        if os.path.exists(temporary):
+                            os.unlink(temporary)
+                    except OSError as cleanup_error:
+                        if write_error is None:
+                            raise
+                        write_error.temporary_cleanup_error = cleanup_error
     except OSError as error:
         if published:
             raise JsonWriteCommittedError(value, error) from error
@@ -152,9 +218,9 @@ def update_json(path, update, default, max_bytes=None):
             except FileNotFoundError:
                 previous = default
             except (json.JSONDecodeError, UnicodeError):
-                fd, backup = tempfile.mkstemp(prefix=path.name + '.corrupt-', dir=str(path.parent))
+                fd, backup = private_temporary(path.parent, path.name + '.corrupt-')
                 try:
-                    with os.fdopen(fd, 'wb') as target, path.open('rb') as source:
+                    with os.fdopen(fd, 'wb') as target, os.fdopen(open_regular(path), 'rb') as source:
                         if max_bytes is None:
                             shutil.copyfileobj(source, target)
                         else:
@@ -164,11 +230,7 @@ def update_json(path, update, default, max_bytes=None):
                             target.write(original)
                         target.flush()
                         os.fsync(target.fileno())
-                    directory_fd = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+                    sync_directory(path.parent)
                 except BaseException:
                     try:
                         os.unlink(backup)

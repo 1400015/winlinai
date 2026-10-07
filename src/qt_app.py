@@ -1,9 +1,4 @@
-"""Minimal Qt shell for the Windows track (phase 4a).
-
-Foundation only: this module deliberately contains no chat logic, no
-dialogs and no tray behaviour. It proves the Qt event loop, the shared
-ConfigManager/i18n integration and the platform-aware startup, so later
-sub-phases (chat, tray, dialogs) migrate onto a working base.
+"""Qt shell for the Windows track, using the shared offline backends.
 
 PySide6 is an optional dependency: when absent, ``available()`` is False and
 ``run()`` reports the same missing-binding message style used for GTK.
@@ -24,6 +19,10 @@ except ImportError as error:
 
 
 MIN_WINDOW_SIZE = (420, 260)
+
+
+class QtStartupError(RuntimeError):
+    """A required backend failed before the Qt shell was ready."""
 
 
 def available() -> bool:
@@ -47,13 +46,15 @@ else:
 class QtShell(_BaseShell):
     """Qt main window: status line plus the chat widget (phase 4b)."""
 
-    def __init__(self, config_manager, platform_name):
+    def __init__(self, config_manager, platform_name, history_path=None):
         if not QT_AVAILABLE:
             raise RuntimeError(missing_dependency_message())
         super().__init__()
         self.config = config_manager
         self.platform_name = platform_name
+        self.history_path = history_path
         self.chat = None
+        self.history_store = None
         self.setWindowTitle("Linux AI Assistant")
         self.resize(*MIN_WINDOW_SIZE)
         central = QtWidgets.QWidget(self)
@@ -104,26 +105,43 @@ class QtShell(_BaseShell):
     def _build_chat(self, layout):
         from .qt_chat import QT_AVAILABLE as CHAT_QT_AVAILABLE, QtChatWidget
         if not CHAT_QT_AVAILABLE:
-            return
+            raise QtStartupError("The Qt chat requires PySide6.")
         from .offline_assistant import OfflineAssistant
         from .system_utils import SystemUtils
         try:
             system_utils = SystemUtils(self.config)
+        except Exception as error:
+            raise QtStartupError("System utilities could not be initialized ({})".format(
+                type(error).__name__)) from error
+        try:
             offline = OfflineAssistant(system_utils, self.config)
         except Exception as error:
-            logger.warning("Offline assistant unavailable for the Qt shell: %s",
-                           type(error).__name__)
-            return
-        self.history_store = None
+            raise QtStartupError("The offline assistant could not be initialized ({})".format(
+                type(error).__name__)) from error
         try:
             from .history_store import HistoryStore
-            self.history_store = HistoryStore()
+            self.history_store = HistoryStore() if self.history_path is None else HistoryStore(self.history_path)
+            # Validate existing history and initialize a writable conversation
+            # before displaying the chat. Loading messages alone can mask a
+            # malformed or unreadable store as an empty conversation.
+            self.history_store.list_sessions()
         except Exception as error:
-            logger.warning("History store unavailable for the Qt shell: %s",
-                           type(error).__name__)
-        self.chat = QtChatWidget(self.config, offline, self,
-                                 history_store=self.history_store)
-        layout.addWidget(self.chat, 1)
+            self._close_history()
+            raise QtStartupError(
+                "Conversation history could not be opened ({}). "
+                "Check access to the history file; for damaged history, use "
+                "`python -m src.cli history recover --help`.".format(type(error).__name__)) from error
+        try:
+            self.chat = QtChatWidget(self.config, offline, self,
+                                     history_store=self.history_store)
+            layout.addWidget(self.chat, 1)
+        except Exception:
+            self._close_history()
+            raise
+
+    def _close_history(self):
+        if self.history_store is not None:
+            self.history_store.close()
 
     def _status_text(self):
         from . import i18n
@@ -134,6 +152,7 @@ class QtShell(_BaseShell):
 
     def closeEvent(self, event):
         logger.info("Qt shell closed by the user")
+        self._close_history()
         super().closeEvent(event)
 
 
@@ -145,28 +164,57 @@ def lock_file_path(base_dir=None):
     return os.path.join(directory, "qt-instance.lock")
 
 
-def run(config_manager, argv=None):
-    """Start the minimal Qt shell. Returns a process exit code."""
+def run(config_manager=None, argv=None):
+    """Start Qt with all required backends, returning a process exit code."""
     if not QT_AVAILABLE:
         print("\nError: {}\n\n{}".format(QT_IMPORT_ERROR, missing_dependency_message()),
               file=sys.stderr)
         return 1
-    from .platform import detect_platform
-    platform_name = detect_platform()
-    argv = list(sys.argv[:1]) if argv is None else list(argv)
-    app = QtWidgets.QApplication(argv)
-    app.setApplicationName("linux-ai-assistant")
-    # Single-instance guard (the GTK track uses DesktopActivation): QLockFile
-    # also removes a stale lock left by a crashed process.
-    lock = QtCore.QLockFile(lock_file_path())
-    if not lock.tryLock(0):
-        print("Another Linux AI Assistant (Qt) instance is already running.",
-              file=sys.stderr)
+    shell = None
+    lock = None
+    try:
+        if config_manager is None:
+            from .config_manager import ConfigManager
+            try:
+                config_manager = ConfigManager()
+            except Exception as error:
+                raise QtStartupError("Configuration could not be loaded ({})".format(
+                    type(error).__name__)) from error
+        from . import i18n
+        i18n.set_language_from_config(config_manager)
+        from .platform import detect_platform
+        platform_name = detect_platform()
+        argv = list(sys.argv[:1]) if argv is None else list(argv)
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(argv)
+        app.setApplicationName("linux-ai-assistant")
+        # Single-instance guard (the GTK track uses DesktopActivation):
+        # QLockFile also removes a stale lock left by a crashed process.
+        lock = QtCore.QLockFile(lock_file_path())
+        if not lock.tryLock(0):
+            print("Another Linux AI Assistant (Qt) instance is already running.",
+                  file=sys.stderr)
+            return 1
+        shell = QtShell(config_manager, platform_name)
+        shell.show()
+        logger.info("Starting Qt event loop (platform: %s)", platform_name)
+        return app.exec()
+    except Exception as error:
+        # Report the failed component without echoing configuration or
+        # untrusted history content from the original exception.
+        detail = str(error) if isinstance(error, QtStartupError) else type(error).__name__
+        logger.error("Qt startup failed: %s", detail)
+        print("Error: Qt startup failed: {}".format(detail), file=sys.stderr)
         return 1
-    shell = QtShell(config_manager, platform_name)
-    shell.show()
-    logger.info("Starting Qt event loop (platform: %s)", platform_name)
-    return app.exec()
+    finally:
+        if shell is not None:
+            shell._close_history()
+        if config_manager is not None:
+            try:
+                config_manager.flush()
+            except Exception as error:
+                logger.warning("Could not flush Qt configuration: %s", type(error).__name__)
+        if lock is not None:
+            lock.unlock()
 
 
 if __name__ == "__main__":
