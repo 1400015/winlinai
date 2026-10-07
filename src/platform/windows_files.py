@@ -11,10 +11,13 @@ loss of power on every filesystem.
 
 from contextlib import contextmanager
 import errno
+import logging
 import os
 from pathlib import Path
 import secrets
 import stat
+
+logger = logging.getLogger(__name__)
 
 
 def _modules():
@@ -196,6 +199,12 @@ def _check_owned(handle, private=False):
             raise ValueError("An unsupported storage ACL cannot be verified")
         mask, sid = ace[1], ace[2]
         if sid not in trusted and (private or mask & unsafe):
+            # Diagnostics only: identify the rejected ACE (SID, type, flags,
+            # mask) without logging file contents or credentials. The policy
+            # itself is unchanged until a native test shows the actual ACE.
+            logger.warning(
+                "Rejected storage ACE: sid=%s type=%s flags=%s mask=%s private=%s",
+                sid, kind, flags, hex(mask), private)
             raise ValueError("The storage ACL grants access to another principal")
 
 
@@ -355,8 +364,15 @@ def publish_temporary(source, target, expected_identity=None):
                 _check_owned(handle, private=True)
                 if expected_identity is not None and owned_identity(target) != expected_identity:
                     raise ValueError("The original file changed before publication")
+                # SetFileInformationByHandle's current implementation converts
+                # the name via RtlDosPathNameToNtPathName and passes RootDirectory
+                # through unchanged: a non-NULL RootDirectory with a relative
+                # FileName is rejected with WinError 87. The supported form is a
+                # fully qualified FileName with a NULL RootDirectory. The parent
+                # handles pinned by guarded_path are still held for the whole
+                # transaction, so the parent cannot be renamed underneath us.
                 _call(file.SetFileInformationByHandle, handle, file.FileRenameInfo,
-                      {"ReplaceIfExists": True, "RootDirectory": parent, "FileName": target.name})
+                      {"ReplaceIfExists": True, "RootDirectory": None, "FileName": str(target)})
                 published = True
             finally:
                 _close_handle(handle)

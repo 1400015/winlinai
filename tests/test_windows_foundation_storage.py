@@ -48,9 +48,28 @@ class TestWindowsStorageRouting(unittest.TestCase):
             if publication_error is not None:
                 raise windows_files.FilePublicationCommittedError(publication_error)
 
+        def shared_open(path):
+            # The real Windows backend opens read handles with
+            # FILE_SHARE_DELETE so a concurrent publication can replace the
+            # name while the descriptor is held (recover_file keeps the
+            # source open across atomic_json_write). The CRT _wopen used by
+            # os.open does not share delete, so on Windows the fake opens
+            # through CreateFile with the same share contract.
+            if os.name != 'nt':
+                return os.open(path, os.O_RDONLY)
+            import msvcrt
+            import win32con
+            import win32file
+            handle = win32file.CreateFile(path, win32con.GENERIC_READ,
+                                          win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE
+                                          | win32con.FILE_SHARE_DELETE, None,
+                                          win32con.OPEN_EXISTING,
+                                          win32file.FILE_ATTRIBUTE_NORMAL, None)
+            return msvcrt.open_osfhandle(handle.Detach(), os.O_RDONLY | os.O_BINARY)
+
         with patch('src.storage._WINDOWS', True), \
                 patch.object(windows_files, 'guarded_path', side_effect=guard), \
-                patch.object(windows_files, 'open_regular', side_effect=lambda path: os.open(path, os.O_RDONLY)), \
+                patch.object(windows_files, 'open_regular', side_effect=shared_open), \
                 patch.object(windows_files, 'private_temporary', side_effect=temporary), \
                 patch.object(windows_files, 'publish_temporary', side_effect=publish), \
                 patch.object(windows_files, 'sync_publication') as synchronized, \
@@ -133,7 +152,7 @@ class TestWindowsHandleContracts(unittest.TestCase):
             with self.assertRaises(OSError):
                 os.fstat(descriptor)
 
-    def test_publication_renames_the_verified_handle_relative_to_the_pinned_parent(self):
+    def test_publication_renames_the_verified_handle_with_absolute_name(self):
         source, target = Path('/private/temporary'), Path('/private/document')
         handle = SimpleNamespace(Close=Mock())
         parent = object()
@@ -157,8 +176,11 @@ class TestWindowsHandleContracts(unittest.TestCase):
         regular.assert_called_once_with(handle)
         self.assertEqual(owned.call_args_list[-1].args, (handle,))
         self.assertEqual(owned.call_args_list[-1].kwargs, {'private': True})
+        # The supported contract: a fully qualified FileName with a NULL
+        # RootDirectory. A relative name plus a directory handle is rejected
+        # with WinError 87 by the current SetFileInformationByHandle.
         file.SetFileInformationByHandle.assert_called_once_with(
-            handle, 3, {'ReplaceIfExists': True, 'RootDirectory': parent, 'FileName': target.name})
+            handle, 3, {'ReplaceIfExists': True, 'RootDirectory': None, 'FileName': str(target)})
         handle.Close.assert_called_once_with()
 
 
@@ -330,6 +352,53 @@ with json_lock(sys.argv[1]):
                 update_json(self.path, lambda previous: value, {})
         self.assertEqual(raised.exception.value, value)
         self.assertEqual(read_json(self.path, 128), value)
+
+    def test_publication_creates_replaces_and_recovers_on_native_windows(self):
+        # Create: publish into a name that does not exist yet.
+        atomic_json_write(self.path, {'step': 'create'})
+        self.assertEqual(read_json(self.path, 128), {'step': 'create'})
+        self.assert_private(self.path)
+        # Replace: publish over an existing private file.
+        atomic_json_write(self.path, {'step': 'replace'})
+        self.assertEqual(read_json(self.path, 128), {'step': 'replace'})
+        self.assert_private(self.path)
+        # Recover: preserve all bytes and reset through the same backend.
+        original = b'{"version":999,"future":true}'
+        self.path.write_bytes(original)
+        backup = HistoryStore.recover_file(self.path, confirmed=True)
+        self.assertEqual(backup.read_bytes(), original)
+        self.assertEqual(json.loads(self.path.read_text(encoding='utf-8'))['version'], 1)
+        self.assert_private(backup)
+        self.assert_private(self.path)
+
+    def test_concurrent_publications_serialize_through_the_sidecar_lock(self):
+        results = []
+
+        def writer(index):
+            results.append(update_json(self.path, lambda previous: {'writer': index}, {}))
+
+        threads = [threading.Thread(target=writer, args=(index,)) for index in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+            self.assertFalse(thread.is_alive(), 'A concurrent writer never finished')
+        self.assertEqual(len(results), 4)
+        self.assertIn(read_json(self.path, 128)['writer'], {0, 1, 2, 3})
+        self.assertEqual(list(self.directory.glob('*.tmp')), [])
+
+    def test_failed_publication_keeps_the_previous_file_intact(self):
+        atomic_json_write(self.path, {'step': 'before'})
+        before = self.path.read_bytes()
+        descriptor, name = windows_files.private_temporary(self.directory, 'doomed-')
+        with os.fdopen(descriptor, 'wb') as target:
+            target.write(b'{"step": "doomed"}')
+        self.addCleanup(lambda: Path(name).unlink(missing_ok=True))
+        # A source outside the target's parent must be refused before any
+        # rename; the original file is untouched.
+        with self.assertRaisesRegex(ValueError, 'sibling'):
+            windows_files.publish_temporary(name, self.path)
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == '__main__':
