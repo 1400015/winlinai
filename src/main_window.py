@@ -1,11 +1,8 @@
 import gi
 import os
-import json
 import time
-import re
 import threading
 from typing import Optional, Dict
-from pathlib import Path
 
 try:
     import notify2
@@ -33,6 +30,7 @@ from .diagnostic_dialog import show_diagnostic_report
 from .trial_dialog import show_trials
 from .provider_settings import ProviderSettings, MODE_LABELS, STATUS_LABELS
 from .credential_settings import APIKeySettings
+from .main_window_themes import PREDEFINED_THEMES, create_theme, populate_themes_list, remove_theme
 from .remote_model_settings import RemoteModelSettings
 from .document_context import MAX_DOCUMENT_CONTEXT_CHARS, display_document_context, with_document_context
 from .document_store import DocumentStore
@@ -710,48 +708,23 @@ class MainWindow(Gtk.Window):
 
         if response == Gtk.ResponseType.OK:
             theme_name = name_entry.get_text().strip()
-            # The name becomes a file name: reject anything that is not a
-            # simple identifier (path separators, "..", spaces, etc.).
-            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", theme_name):
-                self.show_notification(
-                    "Linux AI Assistant",
-                    _("A theme name is required (letters, digits, '-' or '_', max 64)")
-                )
-                dialog.destroy()
-                return
-
-            # Create theme
-            theme = {
-                "name": theme_name,
-                "description": desc_entry.get_text().strip(),
-                "colors": {
-                    "background": bg_entry.get_text().strip(),
-                    "text": text_entry.get_text().strip(),
-                    "accent": accent_entry.get_text().strip(),
-                    "secondary": "#2d2d2d",
-                    "tertiary": "#252525"
-                },
-                "ui": {
-                    "font_family": "Monospace",
-                    "font_size": 12,
-                    "border_radius": 10
-                }
+            description = desc_entry.get_text().strip()
+            colors = {
+                "background": bg_entry.get_text().strip(),
+                "text": text_entry.get_text().strip(),
+                "accent": accent_entry.get_text().strip(),
+                "secondary": "#2d2d2d",
+                "tertiary": "#252525",
             }
-
-            # Save theme
-            themes_dir = Path.home() / ".config" / "linux_ai_assistant" / "themes"
-            themes_dir.mkdir(parents=True, exist_ok=True)
-            theme_file = themes_dir / f"{theme_name}.json"
-
-            try:
-                with open(theme_file, 'w', encoding='utf-8') as f:
-                    json.dump(theme, f, indent=2, ensure_ascii=False)
-
-                self.show_notification("Linux AI Assistant", f"Theme '{theme_name}' created")
+            ui = {
+                "font_family": "Monospace",
+                "font_size": 12,
+                "border_radius": 10,
+            }
+            # create_theme validates the name (it becomes a file name) and
+            # handles persistence + notifications.
+            if create_theme(self, theme_name, description, colors, ui):
                 self._populate_themes_list()
-
-            except Exception as e:
-                self.show_notification("Linux AI Assistant", f"Error saving theme: {e}")
 
         dialog.destroy()
 
@@ -769,8 +742,7 @@ class MainWindow(Gtk.Window):
 
         # Do not allow removing built-in themes (they ship with the app,
         # under the package's themes dir, not the user's)
-        predefined_themes = ["dark", "light", "dracula", "solarized-dark"]
-        if theme_name in predefined_themes:
+        if theme_name in PREDEFINED_THEMES:
             self.show_notification("Linux AI Assistant", _("Cannot remove built-in themes"))
             return
 
@@ -787,55 +759,14 @@ class MainWindow(Gtk.Window):
         dialog.destroy()
 
         if response == Gtk.ResponseType.YES:
-            themes_dir = Path.home() / ".config" / "linux_ai_assistant" / "themes"
-            theme_file = themes_dir / f"{theme_name}.json"
-
-            try:
-                # Resolve and confirm the target really is inside the
-                # user's themes dir before deleting.
-                resolved = theme_file.resolve()
-                if resolved.parent != themes_dir.resolve():
-                    raise ValueError(f"Refusing to delete outside themes dir: {resolved}")
-                if resolved.exists():
-                    resolved.unlink()
-                    self.show_notification("Linux AI Assistant", f"Theme '{theme_name}' removed")
-                    self._populate_themes_list()
-            except Exception as e:
-                self.show_notification("Linux AI Assistant", f"Error removing theme: {e}")
+            # remove_theme resolves the target inside the user themes dir,
+            # refuses path traversal, deletes and notifies.
+            if remove_theme(self, theme_name):
+                self._populate_themes_list()
 
     def _populate_themes_list(self):
-        """Populate the themes list"""
-        # Clear list
-        for child in self.themes_listbox.get_children():
-            self.themes_listbox.remove(child)
-
-        # Get available themes
-        available_themes = self.config.get_available_themes()
-
-        for theme_name in available_themes:
-            theme_info = self.config.get_theme_info(theme_name)
-            display_name = theme_info.get("name", theme_name) if theme_info else theme_name
-            description = theme_info.get("description", "") if theme_info else ""
-
-            row = Gtk.ListBoxRow()
-            # Keep the file stem on the row: the visible label is the
-            # display name, which may differ from the file name.
-            row._theme_id = theme_name
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-
-            name_label = Gtk.Label(label=display_name)
-            name_label.set_halign(Gtk.Align.START)
-            box.pack_start(name_label, False, False, 0)
-
-            desc_label = Gtk.Label(label=description)
-            desc_label.set_halign(Gtk.Align.START)
-            desc_label.set_xalign(0)
-            desc_label.get_style_context().add_class(Gtk.STYLE_CLASS_DIM_LABEL)
-            box.pack_start(desc_label, False, False, 0)
-
-            row.add(box)
-            self.themes_listbox.add(row)
-            row.show_all()
+        """Populate the themes list (delegates to main_window_themes)."""
+        populate_themes_list(self)
 
     def on_history_clicked(self, item):
         """Show conversation history"""
