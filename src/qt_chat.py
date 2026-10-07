@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 try:
-    from PySide6 import QtCore, QtWidgets
+    from PySide6 import QtCore, QtGui, QtWidgets
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
@@ -45,8 +46,14 @@ def append_is_bounded(log_chars, chunk):
     return log_chars + len(chunk) <= MAX_LOG_CHARS
 
 
-def provider_reply_text(ai_client, messages, lang="en"):
+def provider_reply_text(ai_client, messages, lang="en", image_paths=None):
     """Pure send path: call the AI provider and return its answer.
+
+    Args:
+        ai_client: AIClient instance
+        messages: List of message dicts
+        lang: Language code for system prompt
+        image_paths: Optional list of image file paths to attach
 
     Returns (text, error) where error is None on success.
     """
@@ -66,7 +73,23 @@ def provider_reply_text(ai_client, messages, lang="en"):
             system_prompt = "Du bist ein hilfreicher Assistent. Antworte auf Deutsch."
         full_messages.insert(0, {"role": "system", "content": system_prompt})
 
-        response = ai_client.chat(full_messages)
+        # Prepare images if provided
+        images = None
+        if image_paths:
+            try:
+                from .image_attachments import validate_attachment
+                images = []
+                for path in image_paths:
+                    attachment = validate_attachment(path)
+                    if attachment:
+                        images.append(attachment)
+                if not images:
+                    images = None
+            except Exception as error:
+                logger.warning("Image validation failed: %s", type(error).__name__)
+                images = None
+
+        response = ai_client.chat(full_messages, images=images)
         if response:
             return response, None
         return None, "empty-response"
@@ -155,10 +178,37 @@ class QtChatWidget(_BaseWidget):
         self.log = QtWidgets.QPlainTextEdit(self)
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(4096)
+        # Enable drag & drop for images
+        self.log.setAcceptDrops(True)
+        self.log.dragEnterEvent = self._on_drag_enter
+        self.log.dropEvent = self._on_drop
         layout.addWidget(self.log, 1)
+
+        # Attachment preview area (hidden by default)
+        self.attachment_area = QtWidgets.QWidget(self)
+        self.attachment_layout = QtWidgets.QHBoxLayout(self.attachment_area)
+        self.attachment_layout.setContentsMargins(0, 0, 0, 0)
+        self.attachment_area.setVisible(False)
+        self._attachments = []  # List of attachment dicts
+        layout.addWidget(self.attachment_area)
 
         # Input row
         row = QtWidgets.QHBoxLayout()
+
+        # Attach button
+        self.attach_button = QtWidgets.QPushButton("📎", self)
+        self.attach_button.setMaximumWidth(40)
+        self.attach_button.setToolTip(i18n._("Attach image"))
+        self.attach_button.clicked.connect(self._on_attach_clicked)
+        row.addWidget(self.attach_button)
+
+        # Screenshot button (Windows)
+        self.screenshot_button = QtWidgets.QPushButton("📷", self)
+        self.screenshot_button.setMaximumWidth(40)
+        self.screenshot_button.setToolTip(i18n._("Take screenshot"))
+        self.screenshot_button.clicked.connect(self._on_screenshot_clicked)
+        row.addWidget(self.screenshot_button)
+
         self.input = QtWidgets.QLineEdit(self)
         self.input.setPlaceholderText(i18n._("Type a message..."))
         self.input.returnPressed.connect(self._on_return)
@@ -170,6 +220,111 @@ class QtChatWidget(_BaseWidget):
 
         # Provider indicator
         self._update_provider_indicator()
+
+        # Add context menu with conversation actions
+        try:
+            from .qt_conversation_actions import add_context_menu_to_chat
+            add_context_menu_to_chat(self)
+        except Exception as error:
+            logger.warning("Could not add context menu: %s", type(error).__name__)
+
+    def _on_attach_clicked(self):
+        """Open file dialog to attach an image."""
+        from . import i18n
+        filepath, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, i18n._("Attach image"), "",
+            "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;All files (*)")
+        if filepath:
+            self._add_attachment(filepath)
+
+    def _on_screenshot_clicked(self):
+        """Take a screenshot and attach it."""
+        from .windows_screenshot import capture_and_attach
+        result = capture_and_attach(self)
+        if result:
+            filepath, _data = result
+            self._add_attachment(filepath)
+
+    def _on_drag_enter(self, event):
+        """Handle drag enter event for images."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def _on_drop(self, event):
+        """Handle drop event for images."""
+        for url in event.mimeData().urls():
+            filepath = url.toLocalFile()
+            if self._is_image_file(filepath):
+                self._add_attachment(filepath)
+        event.acceptProposedAction()
+
+    def _is_image_file(self, filepath):
+        """Check if a file is an image."""
+        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+        return Path(filepath).suffix.lower() in image_extensions
+
+    def _add_attachment(self, filepath):
+        """Add an image attachment with preview."""
+        from . import i18n
+        from pathlib import Path
+
+        path = Path(filepath)
+        if not path.is_file():
+            return
+
+        # Check if image input is supported
+        if not should_use_provider(self.ai_client, self.config):
+            QtWidgets.QMessageBox.information(
+                self, i18n._("Image attachments"),
+                i18n._("Image attachments require an AI provider with vision support."))
+            return
+
+        # Create preview widget
+        preview = QtWidgets.QWidget(self.attachment_area)
+        preview_layout = QtWidgets.QVBoxLayout(preview)
+        preview_layout.setContentsMargins(4, 4, 4, 4)
+
+        # Thumbnail
+        label = QtWidgets.QLabel(preview)
+        pixmap = QtGui.QPixmap(str(path))
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(64, 64, QtCore.Qt.KeepAspectRatio,
+                                   QtCore.Qt.SmoothTransformation)
+            label.setPixmap(pixmap)
+        else:
+            label.setText("🖼️")
+        preview_layout.addWidget(label)
+
+        # Filename
+        name_label = QtWidgets.QLabel(path.name[:15], preview)
+        name_label.setAlignment(QtCore.Qt.AlignCenter)
+        name_label.setStyleSheet("font-size: 9px;")
+        preview_layout.addWidget(name_label)
+
+        # Remove button
+        remove_btn = QtWidgets.QPushButton("×", preview)
+        remove_btn.setMaximumWidth(20)
+        remove_btn.setMaximumHeight(20)
+        remove_btn.clicked.connect(lambda: self._remove_attachment(preview, filepath))
+        preview_layout.addWidget(remove_btn, alignment=QtCore.Qt.AlignRight)
+
+        self.attachment_layout.addWidget(preview)
+        self._attachments.append({"path": filepath, "widget": preview})
+        self.attachment_area.setVisible(True)
+
+    def _remove_attachment(self, widget, filepath):
+        """Remove an attachment."""
+        self._attachments = [a for a in self._attachments if a["path"] != filepath]
+        widget.deleteLater()
+        if not self._attachments:
+            self.attachment_area.setVisible(False)
+
+    def _clear_attachments(self):
+        """Clear all attachments."""
+        for attachment in self._attachments:
+            attachment["widget"].deleteLater()
+        self._attachments = []
+        self.attachment_area.setVisible(False)
 
     def _update_provider_indicator(self):
         """Show which backend is active (AI provider or offline)."""
@@ -187,23 +342,30 @@ class QtChatWidget(_BaseWidget):
 
     def _on_send(self):
         text = self.input.text().strip()
-        if not text:
+        if not text and not self._attachments:
             return
         if self._worker_thread is not None and self._worker_thread.is_alive():
             return  # Don't send while waiting for a response
         self.input.clear()
         from . import i18n
-        self.append_message(i18n._("User"), text)
+
+        # Build display text with attachment indicators
+        display_text = text
+        if self._attachments:
+            attachment_names = ", ".join(Path(a["path"]).name for a in self._attachments)
+            display_text = f"{text}\n[📎 {attachment_names}]" if text else f"[📎 {attachment_names}]"
+
+        self.append_message(i18n._("User"), display_text)
 
         # Save to history
         if self.history_store is not None:
             try:
-                self.history_store.append("user", text)
+                self.history_store.append("user", display_text)
             except Exception as error:
                 logger.warning("History write failed: %s", type(error).__name__)
 
         # Track message for provider context
-        self._pending_messages.append({"role": "user", "content": text})
+        self._pending_messages.append({"role": "user", "content": text or "[image]"})
 
         # Show thinking indicator
         self._show_thinking()
@@ -213,6 +375,9 @@ class QtChatWidget(_BaseWidget):
             self._send_to_provider()
         else:
             self._send_to_offline(text)
+
+        # Clear attachments after sending
+        self._clear_attachments()
 
     def _show_thinking(self):
         from . import i18n
@@ -248,9 +413,13 @@ class QtChatWidget(_BaseWidget):
         from . import i18n
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         messages = list(self._pending_messages)
+        # Capture attachment paths (they will be cleared after send)
+        attachment_paths = [a["path"] for a in self._attachments]
 
         def worker():
-            text, error = provider_reply_text(self.ai_client, messages, lang)
+            text, error = provider_reply_text(
+                self.ai_client, messages, lang,
+                image_paths=attachment_paths if attachment_paths else None)
             if error:
                 logger.error("Provider error: %s", error)
                 # Fall back to offline
