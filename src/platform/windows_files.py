@@ -125,12 +125,14 @@ def _check_handle(handle, directory=False):
         raise ValueError("Storage input must be a regular {}".format("directory" if directory else "file"))
 
 
-def _directory_handle(path, write_acl=False):
+def _directory_handle(path, write_acl=False, share_write=False):
     _, _, _, con, file, _ = _modules()
     access = (_rights().FILE_READ_ATTRIBUTES | _rights().FILE_TRAVERSE | con.READ_CONTROL
               | (con.WRITE_DAC if write_acl else 0))
+    share = (con.FILE_SHARE_READ | con.FILE_SHARE_WRITE | con.FILE_SHARE_DELETE
+             if share_write else con.FILE_SHARE_READ)
     handle = _call(file.CreateFile, str(path), access,
-                   con.FILE_SHARE_READ, None, con.OPEN_EXISTING,
+                   share, None, con.OPEN_EXISTING,
                    con.FILE_FLAG_BACKUP_SEMANTICS | file.FILE_FLAG_OPEN_REPARSE_POINT, None)
     try:
         _check_handle(handle, directory=True)
@@ -141,8 +143,15 @@ def _directory_handle(path, write_acl=False):
 
 
 @contextmanager
-def guarded_path(path, create_parents=False):
-    """Pin parents against renames and concurrent writes to reparse metadata."""
+def guarded_path(path, create_parents=False, writable_parent=False):
+    """Pin parents against renames and concurrent writes to reparse metadata.
+
+    With writable_parent=True the immediate parent is pinned with full
+    sharing instead: publication renames a file by its fully qualified name,
+    which requires the kernel to open the parent directory for write and
+    delete access, and a read-only shared pin would block it (WinError 32).
+    Ancestors keep the restrictive pin either way.
+    """
     _, _, _, _, file, _ = _modules()
     path = _safe_path(path)
     handles = []
@@ -151,8 +160,9 @@ def guarded_path(path, create_parents=False):
         handles.append(_directory_handle(current))
         for part in path.parent.parts[1:]:
             current /= part
+            last = part == path.parent.parts[-1]
             try:
-                handle = _directory_handle(current)
+                handle = _directory_handle(current, share_write=writable_parent and last)
             except FileNotFoundError:
                 if not create_parents:
                     raise
@@ -160,7 +170,7 @@ def guarded_path(path, create_parents=False):
                     _call(file.CreateDirectory, str(current), _private_security(directory=True))
                 except FileExistsError:
                     pass
-                handle = _directory_handle(current)
+                handle = _directory_handle(current, share_write=writable_parent and last)
             handles.append(handle)
         yield path, handles[-1]
     finally:
@@ -351,7 +361,7 @@ def publish_temporary(source, target, expected_identity=None):
     _, _, _, con, file, _ = _modules()
     published = False
     try:
-        with guarded_path(target) as (target, parent):
+        with guarded_path(target, writable_parent=True) as (target, parent):
             _check_owned(parent)
             source = _safe_path(source)
             if source.parent != target.parent:

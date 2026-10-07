@@ -60,7 +60,7 @@ class TestWindowsStorageRouting(unittest.TestCase):
             import msvcrt
             import win32con
             import win32file
-            handle = win32file.CreateFile(path, win32con.GENERIC_READ,
+            handle = win32file.CreateFile(str(path), win32con.GENERIC_READ,
                                           win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE
                                           | win32con.FILE_SHARE_DELETE, None,
                                           win32con.OPEN_EXISTING,
@@ -163,7 +163,7 @@ class TestWindowsHandleContracts(unittest.TestCase):
         modules = (None, None, None, con, file, None)
 
         @contextmanager
-        def guard(path):
+        def guard(path, create_parents=False, writable_parent=False):
             yield path, parent
 
         with patch.object(windows_files, '_modules', return_value=modules), \
