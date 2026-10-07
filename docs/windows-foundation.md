@@ -43,8 +43,8 @@ arrancar a interface Qt.
 | Execução limitada | Backend Windows para prazos, limites de saída e processos descendentes |
 | Distribuição Python | Wheel completo e ensaio fora do checkout |
 | Conversa Qt | Assistência offline e histórico; paridade de IA local/remota por completar |
-| Diagnósticos PowerShell/WSL | Fronteira do host e catálogo de sondas corrigidos; normalização dos resultados por completar |
-| Tray e autostart | Implementação existente; correções e aceitação por completar |
+| Diagnósticos PowerShell/WSL | Fronteira do host e catálogo de sondas corrigidos; normalização dos resultados implementada (`src/platform/pwsh_output.py`) |
+| Tray e autostart | Corrigidos: Expert Mode, Statistics, ícone SVG, tooltip com plataforma, checkbox de autostart em Settings |
 | Instalador Windows | Instalação manual por ambiente virtual nesta etapa |
 
 Os comandos continuam sujeitos à política local. O texto de um modelo ou de
@@ -124,7 +124,42 @@ Windows, versão do Python e commit utilizado:
 5. Verificar a execução de uma sonda permitida, uma recusa por política e o
    resultado dos testes de prazo/limite de saída no terminal.
 
-Ainda faltam a correção e a aceitação de tray/autostart e do instalador, a
-normalização dos resultados PowerShell e a
-consolidação da gestão de conversas Qt. A integração de providers e a paridade
-com as ações GTK devem ter critérios próprios antes de serem anunciadas.
+## Correções desta iteração (2026-10-07)
+
+### Tray Qt (`src/qt_tray.py`)
+- **Expert Mode**: checkbox no menu (paridade com GTK), sincronizado via `update_expert_mode()`
+- **Statistics**: item de menu para abrir o diálogo de estatísticas
+- **Ícone**: carregado do SVG empacotado em `assets/` (fallback para tema/janela)
+- **Tooltip**: mostra a plataforma (ex: "Linux AI Assistant — Windows")
+- **Menu completo**: Show/Hide, Expert Mode, Settings, History, Statistics, Quit
+
+### Autostart (`src/windows_autostart.py`)
+- `is_autostart_enabled()`: verifica o estado atual no Registry
+- `set_autostart()`: wrapper de alto nível com backends reais
+- `default_powershell_exe()` / `default_script_path()`: detecta caminhos automaticamente
+- Integração em `QtSettingsDialog`: checkbox "Start with Windows" (só em Windows)
+
+### Normalização PowerShell (`src/platform/pwsh_output.py`)
+- `wrap_cmdlet_json()`: envolve cmdlets com `ConvertTo-Json -Compress`
+- `parse_json_output()`: parseia output JSON do PowerShell, tratando erros
+- Normalizadores por tipo: `normalize_service`, `normalize_process`, `normalize_volume`, `normalize_network_adapter`, `normalize_ip_config`
+- `run_probe()`: executa sonda validada e retorna dados normalizados
+
+### Diálogos Qt (`src/qt_dialogs.py`)
+- `QtSettingsDialog`: seção de API Keys + seção de Startup (autostart)
+- `QtStatisticsDialog`: diálogo de estatísticas com reset (paridade com GTK)
+- `statistics_rows()`: lógica pura de apresentação de uso de tokens
+
+### Testes
+- `tests/test_qt_phase4c.py`: +15 testes (expert mode, platform label, autostart high-level, statistics rows, tray actions)
+- `tests/test_pwsh_output.py`: 30 testes para normalização de output PowerShell
+
+## Ainda falta
+
+- **Aceitação em máquina Windows real**: validar tray, autostart e ícones com sessão gráfica
+- **Instalador Windows**: empacotamento .msi/.exe (Inno Setup/NSIS)
+- **Consolidação da gestão de conversas Qt**: paridade completa com GTK
+- **Integração de providers de IA**: `ai_client` no chat Qt
+- **Paridade com ações GTK**: `conversation_actions`, `file_actions`, `package_actions`, `service_actions`
+- **Captura de ecrã**: equivalente Windows ao portal Wayland
+- **Temas visuais**: carregar `themes/*.json` como stylesheets Qt

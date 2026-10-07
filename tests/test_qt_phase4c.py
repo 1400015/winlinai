@@ -3,9 +3,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from src.qt_tray import normalize_reason, tray_click_toggles
+from src.qt_tray import (
+    normalize_reason, tray_click_toggles, expert_mode_enabled,
+    _platform_label, _bundled_icon_path,
+)
+from src.qt_dialogs import autostart_status_label, statistics_rows
 from src.windows_autostart import (
     AUTOSTART_VALUE_NAME, RUN_KEY, apply_autostart, autostart_command,
+    is_autostart_enabled, set_autostart, is_windows,
 )
 
 
@@ -51,6 +56,44 @@ class TestTrayToggleDecision(unittest.TestCase):
         broken = Mock()
         broken.get = Mock(side_effect=KeyError("missing"))
         self.assertTrue(tray_click_toggles(broken, "Trigger"))
+
+
+class TestExpertModeDecision(unittest.TestCase):
+    def test_enabled_by_config(self):
+        self.assertTrue(expert_mode_enabled(config(True)))
+        self.assertFalse(expert_mode_enabled(config(False)))
+
+    def test_default_when_missing(self):
+        broken = Mock()
+        broken.get = Mock(side_effect=KeyError("missing"))
+        self.assertFalse(expert_mode_enabled(broken, default=False))
+        self.assertTrue(expert_mode_enabled(broken, default=True))
+
+    def test_broken_config_keeps_default(self):
+        broken = Mock()
+        broken.get = Mock(side_effect=RuntimeError("unavailable"))
+        self.assertFalse(expert_mode_enabled(broken, default=False))
+        self.assertTrue(expert_mode_enabled(broken, default=True))
+
+
+class TestPlatformLabel(unittest.TestCase):
+    def test_known_platforms(self):
+        self.assertEqual(_platform_label("windows"), "Windows")
+        self.assertEqual(_platform_label("wsl"), "WSL")
+        self.assertEqual(_platform_label("linux"), "Linux")
+
+    def test_unknown_platform(self):
+        self.assertEqual(_platform_label(""), "Unknown")
+        self.assertEqual(_platform_label(None), "Unknown")
+        self.assertEqual(_platform_label("freebsd"), "freebsd")
+
+
+class TestBundledIconPath(unittest.TestCase):
+    def test_finds_svg_in_checkout(self):
+        path = _bundled_icon_path()
+        if path is not None:
+            self.assertTrue(path.is_file())
+            self.assertTrue(path.name.endswith(".svg"))
 
 
 class TestAutostartCommand(unittest.TestCase):
@@ -104,6 +147,65 @@ class TestAutostartApply(unittest.TestCase):
         self.assertEqual(RUN_KEY, r"Software\Microsoft\Windows\CurrentVersion\Run")
 
 
+class TestAutostartHighLevel(unittest.TestCase):
+    def test_is_windows_returns_bool(self):
+        self.assertIsInstance(is_windows(), bool)
+
+    def test_is_autostart_enabled_off_windows(self):
+        # On non-Windows, should return None
+        if not is_windows():
+            self.assertIsNone(is_autostart_enabled())
+
+    def test_set_autostart_off_windows(self):
+        if not is_windows():
+            self.assertIsNone(set_autostart(True))
+            self.assertIsNone(set_autostart(False))
+
+    def test_is_autostart_enabled_with_injected_read(self):
+        # Test with injected read_value (works on any platform)
+        read = Mock(return_value="some command")
+        self.assertTrue(is_autostart_enabled(read_value=read))
+        read = Mock(return_value=None)
+        self.assertFalse(is_autostart_enabled(read_value=read))
+
+    def test_is_autostart_enabled_handles_errors(self):
+        read = Mock(side_effect=OSError("registry error"))
+        if is_windows():
+            self.assertIsNone(is_autostart_enabled(read_value=read))
+
+
+class TestAutostartStatusLabel(unittest.TestCase):
+    def test_enabled(self):
+        self.assertEqual(autostart_status_label(True), "enabled")
+
+    def test_disabled(self):
+        self.assertEqual(autostart_status_label(False), "disabled")
+
+    def test_unavailable(self):
+        self.assertEqual(autostart_status_label(None), "unavailable")
+
+
+class TestStatisticsRows(unittest.TestCase):
+    def test_no_client(self):
+        self.assertEqual(statistics_rows(None), [])
+
+    def test_with_usage(self):
+        client = Mock()
+        client.get_token_usage.return_value = {
+            "openrouter": {"input": 100, "output": 50, "total": 150},
+            "google": {"input": 200, "output": 100, "total": 300},
+        }
+        rows = statistics_rows(client)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["provider"], "openrouter")
+        self.assertEqual(rows[0]["total"], 150)
+
+    def test_client_error(self):
+        client = Mock()
+        client.get_token_usage.side_effect = RuntimeError("no stats")
+        self.assertEqual(statistics_rows(client), [])
+
+
 class TestScriptsPresent(unittest.TestCase):
     def test_run_ps1_and_install_ps1_exist(self):
         from pathlib import Path
@@ -127,6 +229,62 @@ class TestQtTrayConstruction(unittest.TestCase):
         if getattr(shell, "tray_icon", None) is not None:
             self.assertTrue(shell.tray_icon.isVisible() or True)
         shell.close()
+
+    def test_tray_has_expert_mode_action(self):
+        import src.qt_tray as qt_tray
+        if not qt_tray.QT_AVAILABLE:
+            self.skipTest("PySide6 unavailable in this environment")
+        from PySide6 import QtWidgets, QtGui
+        _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        from src.qt_tray import QtTrayIcon
+        shell = Mock()
+        shell.platform_name = "windows"
+        shell.windowIcon.return_value = QtGui.QIcon()
+        shell.toggle_visibility = Mock()
+        config = Mock()
+        config.get = Mock(return_value=False)
+        tray = QtTrayIcon(config, shell)
+        self.assertTrue(hasattr(tray, "expert_action"))
+        self.assertTrue(tray.expert_action.isCheckable())
+        tray.deleteLater()
+
+    def test_tray_has_statistics_action(self):
+        import src.qt_tray as qt_tray
+        if not qt_tray.QT_AVAILABLE:
+            self.skipTest("PySide6 unavailable in this environment")
+        from PySide6 import QtWidgets, QtGui
+        _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        from src.qt_tray import QtTrayIcon
+        shell = Mock()
+        shell.platform_name = "windows"
+        shell.windowIcon.return_value = QtGui.QIcon()
+        shell.toggle_visibility = Mock()
+        config = Mock()
+        config.get = Mock(return_value=False)
+        tray = QtTrayIcon(config, shell)
+        actions = [a.text() for a in tray.menu.actions()]
+        self.assertIn("Statistics", actions)
+        tray.deleteLater()
+
+    def test_update_expert_mode_syncs_checkbox(self):
+        import src.qt_tray as qt_tray
+        if not qt_tray.QT_AVAILABLE:
+            self.skipTest("PySide6 unavailable in this environment")
+        from PySide6 import QtWidgets, QtGui
+        _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        from src.qt_tray import QtTrayIcon
+        shell = Mock()
+        shell.platform_name = "windows"
+        shell.windowIcon.return_value = QtGui.QIcon()
+        shell.toggle_visibility = Mock()
+        config = Mock()
+        config.get = Mock(return_value=False)
+        tray = QtTrayIcon(config, shell)
+        tray.update_expert_mode(True)
+        self.assertTrue(tray.expert_action.isChecked())
+        tray.update_expert_mode(False)
+        self.assertFalse(tray.expert_action.isChecked())
+        tray.deleteLater()
 
 
 if __name__ == "__main__":

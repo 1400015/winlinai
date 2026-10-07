@@ -5,10 +5,15 @@ a single value under HKCU pointing at the launcher. Registry access is
 injected (``read_value``/``write_value``/``delete_value``) so the decision
 logic — value construction, idempotency, comparison — is fully testable
 without Windows, exactly like the polkit-free decision points elsewhere.
+
+High-level helpers (``is_autostart_enabled``, ``set_autostart``) wrap the
+pure logic with the real winreg backends and degrade gracefully off Windows.
 """
 from __future__ import annotations
 
 import logging
+import os
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -80,3 +85,70 @@ def windows_backends():
             winreg.DeleteValue(handle, name)
 
     return read_value, write_value, delete_value
+
+
+def is_windows():
+    """True when running on a native Windows host."""
+    return sys.platform == "win32"
+
+
+def default_powershell_exe():
+    """Locate powershell.exe (Windows PowerShell 5.1, always present)."""
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    return os.path.join(
+        system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
+def default_script_path():
+    """Locate run.ps1 relative to the project root."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    script = root / "run.ps1"
+    return str(script) if script.is_file() else None
+
+
+def is_autostart_enabled(read_value=None):
+    """Check whether autostart is currently enabled.
+
+    Returns True/False on Windows; None when the status cannot be determined
+    (off Windows, missing winreg, or registry error).
+    """
+    if not is_windows():
+        return None
+    backends = windows_backends()
+    if backends is None:
+        return None
+    if read_value is None:
+        read_value = backends[0]
+    try:
+        return read_value(RUN_KEY, AUTOSTART_VALUE_NAME) is not None
+    except Exception:
+        logger.warning("Could not read autostart status from Registry")
+        return None
+
+
+def set_autostart(enabled, script_path=None, ui="qt", read_value=None,
+                  write_value=None, delete_value=None):
+    """Enable or disable autostart on Windows.
+
+    Returns a status string ("enabled", "disabled", "already-enabled",
+    "already-disabled") or None when not on Windows / backends unavailable.
+    """
+    if not is_windows():
+        return None
+    backends = windows_backends()
+    if backends is None:
+        return None
+    if read_value is None:
+        read_value, write_value, delete_value = backends
+    if script_path is None:
+        script_path = default_script_path()
+    if script_path is None:
+        logger.error("run.ps1 not found; cannot configure autostart")
+        return None
+    command = autostart_command(default_powershell_exe(), script_path, ui)
+    try:
+        return apply_autostart(enabled, command, read_value, write_value, delete_value)
+    except Exception as error:
+        logger.error("Failed to apply autostart: %s", type(error).__name__)
+        return None

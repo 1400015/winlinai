@@ -71,6 +71,39 @@ def save_api_key(config, provider, key_text):
     return True, "stored"
 
 
+def autostart_status_label(enabled):
+    """Human-readable label for the autostart checkbox state.
+
+    ``enabled`` is True/False/None (None = unknown / not on Windows).
+    """
+    if enabled is None:
+        return "unavailable"
+    return "enabled" if enabled else "disabled"
+
+
+def statistics_rows(ai_client):
+    """Token usage rows for the statistics dialog.
+
+    Returns a list of dicts: {"provider": str, "input": int, "output": int, "total": int}.
+    Returns an empty list when no client or no stats are available.
+    """
+    if ai_client is None:
+        return []
+    try:
+        usage = ai_client.get_token_usage()
+    except Exception:
+        return []
+    rows = []
+    for provider, stats in usage.items():
+        rows.append({
+            "provider": provider,
+            "input": stats.get("input", 0),
+            "output": stats.get("output", 0),
+            "total": stats.get("total", 0),
+        })
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Dialogs (thin Qt wrappers)
 # ---------------------------------------------------------------------------
@@ -82,7 +115,7 @@ else:
 
 
 class QtSettingsDialog(_BaseDialog):
-    """API settings: provider selector, key entry, save."""
+    """API settings: provider selector, key entry, save, plus autostart."""
 
     def __init__(self, config, parent=None):
         if not QT_AVAILABLE:
@@ -93,27 +126,75 @@ class QtSettingsDialog(_BaseDialog):
         self.setWindowTitle(i18n._("Settings"))
         self.setMinimumWidth(420)
         layout = QtWidgets.QVBoxLayout(self)
+
+        # --- API Keys section ---
+        api_group = QtWidgets.QGroupBox(i18n._("API Keys"), self)
+        api_layout = QtWidgets.QVBoxLayout(api_group)
         form = QtWidgets.QFormLayout()
-        self.provider_combo = QtWidgets.QComboBox(self)
+        self.provider_combo = QtWidgets.QComboBox(api_group)
         for row in provider_rows(config):
             label = row["provider"]
             if row["overridden"]:
                 label += " ({})".format(i18n._("overridden by environment"))
             self.provider_combo.addItem(label, row["provider"])
         form.addRow(i18n._("Provider"), self.provider_combo)
-        self.key_edit = QtWidgets.QLineEdit(self)
+        self.key_edit = QtWidgets.QLineEdit(api_group)
         self.key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         self.key_edit.setPlaceholderText(i18n._("API Key"))
         form.addRow(i18n._("API Key"), self.key_edit)
-        layout.addLayout(form)
+        api_layout.addLayout(form)
+        save_key_btn = QtWidgets.QPushButton(i18n._("Save API Key"), api_group)
+        save_key_btn.clicked.connect(self._save_key)
+        api_layout.addWidget(save_key_btn)
+        layout.addWidget(api_group)
+
+        # --- Autostart section (Windows only) ---
+        self._build_autostart_section(layout, i18n)
+
+        # --- Buttons ---
         buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self._save)
+            QtWidgets.QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _build_autostart_section(self, layout, i18n):
+        """Add the autostart checkbox (Windows only, hidden elsewhere)."""
+        from .windows_autostart import is_autostart_enabled, is_windows
+        if not is_windows():
+            return
+        group = QtWidgets.QGroupBox(i18n._("Startup"), self)
+        group_layout = QtWidgets.QVBoxLayout(group)
+        self.autostart_check = QtWidgets.QCheckBox(
+            i18n._("Start with Windows"), group)
+        status = is_autostart_enabled()
+        self.autostart_check.setChecked(bool(status))
+        self.autostart_check.stateChanged.connect(self._on_autostart_changed)
+        group_layout.addWidget(self.autostart_check)
+        self.autostart_status = QtWidgets.QLabel(
+            i18n._("Status: {}").format(
+                i18n._(autostart_status_label(status))), group)
+        group_layout.addWidget(self.autostart_status)
+        layout.addWidget(group)
+
+    def _on_autostart_changed(self, state):
+        from . import i18n
+        from .windows_autostart import set_autostart, is_autostart_enabled, autostart_status_label
+        enabled = state == 2  # Qt.Checked
+        result = set_autostart(enabled)
+        status = is_autostart_enabled()
+        self.autostart_status.setText(
+            i18n._("Status: {}").format(i18n._(autostart_status_label(status))))
+        if result is None:
+            logger.warning("Autostart change failed")
+
     def selected_provider(self):
         return self.provider_combo.currentData()
+
+    def _save_key(self):
+        ok, _message = save_api_key(self.config, self.selected_provider(),
+                                    self.key_edit.text())
+        if ok:
+            self.key_edit.clear()
 
     def _save(self):
         ok, _message = save_api_key(self.config, self.selected_provider(),
@@ -180,3 +261,57 @@ class QtHistoryDialog(_BaseDialog):
         if callable(self.on_open):
             self.on_open(session_id)
         self.accept()
+
+
+class QtStatisticsDialog(_BaseDialog):
+    """Usage statistics: token counts by provider, with reset."""
+
+    def __init__(self, ai_client, parent=None):
+        if not QT_AVAILABLE:
+            raise RuntimeError("PySide6 is required for QtStatisticsDialog")
+        super().__init__(parent)
+        from . import i18n
+        self.ai_client = ai_client
+        self.setWindowTitle(i18n._("Statistics - Linux AI Assistant"))
+        self.setMinimumSize(400, 300)
+        layout = QtWidgets.QVBoxLayout(self)
+
+        title = QtWidgets.QLabel("<b>{}</b>".format(i18n._("Usage Statistics")), self)
+        layout.addWidget(title)
+
+        self.rows_layout = QtWidgets.QVBoxLayout()
+        layout.addLayout(self.rows_layout)
+
+        self.token_labels = []
+        self._populate()
+
+        reset_btn = QtWidgets.QPushButton(i18n._("Reset Statistics"), self)
+        reset_btn.clicked.connect(self._reset)
+        reset_btn.setStyleSheet("margin-top: 10px;")
+        layout.addWidget(reset_btn)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+    def _populate(self):
+        for row in statistics_rows(self.ai_client):
+            provider_box = QtWidgets.QHBoxLayout()
+            provider_label = QtWidgets.QLabel("{}:".format(row["provider"]), self)
+            provider_box.addWidget(provider_label)
+            tokens_label = QtWidgets.QLabel(
+                "Input: {}, Output: {}, Total: {}".format(
+                    row["input"], row["output"], row["total"]), self)
+            provider_box.addWidget(tokens_label, 1)
+            self.rows_layout.addLayout(provider_box)
+            self.token_labels.append((row["provider"], tokens_label))
+
+    def _reset(self):
+        if self.ai_client is None:
+            return
+        try:
+            self.ai_client.reset_token_usage()
+        except Exception:
+            logger.warning("Could not reset token usage")
+        for _provider, tokens_label in self.token_labels:
+            tokens_label.setText("Input: 0, Output: 0, Total: 0")

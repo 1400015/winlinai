@@ -81,6 +81,33 @@ class QtShell(_BaseShell):
                 self.chat.load_session(session_id)
         QtHistoryDialog(self.history_store, self, on_open=reopen, on_new=reopen).exec()
 
+    def on_expert_mode_toggled(self, _button):
+        """Toggle expert mode (called from the tray menu or a future button)."""
+        try:
+            current = bool(self.config.get("app.expert_mode", False))
+        except Exception:
+            current = False
+        new_value = not current
+        try:
+            self.config.set("app.expert_mode", new_value)
+        except Exception as error:
+            logger.warning("Could not persist expert mode: %s", type(error).__name__)
+            return
+        tray = getattr(self, "tray_icon", None)
+        if tray is not None:
+            tray.update_expert_mode(new_value)
+        logger.info("Expert mode %s (Qt)", "enabled" if new_value else "disabled")
+
+    def show_statistics(self):
+        """Show usage statistics dialog (parity with GTK tray)."""
+        from .qt_dialogs import QT_AVAILABLE as DIALOGS_QT_AVAILABLE
+        if not DIALOGS_QT_AVAILABLE:
+            return
+        from .qt_dialogs import QtStatisticsDialog
+        chat = getattr(self, "chat", None)
+        ai_client = getattr(chat, "ai_client", None) if chat is not None else None
+        QtStatisticsDialog(ai_client, self).exec()
+
     def toggle_visibility(self):
         """Single toggle point for the Qt track (tray, future shortcut)."""
         if self.isVisible():
