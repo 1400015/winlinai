@@ -160,11 +160,62 @@ def get_system_info() -> Tuple[bool, Dict, Optional[str]]:
     return True, info, None
 
 
+def _run_winget(args, timeout=60, output_limit=1024 * 1024):
+    """Run winget through the project's bounded process runner.
+
+    winget is not in the POSIX command_policy allowlist (it is a Windows
+    tool), so this applies its own narrow policy: only `list` and `search`
+    subcommands, with a validated query for search. Everything goes through
+    process_output.run_bounded (timeout + output limit + Windows Job Object
+    cleanup), never a raw subprocess.run.
+    """
+    import re
+    from .process_output import run_bounded
+
+    if not args or args[0] not in ("list", "search"):
+        raise ValueError("winget subcommand not allowed")
+    argv = ["winget", args[0]]
+    if args[0] == "list":
+        argv.append("--accept-source-agreements")
+    else:  # search
+        if len(args) < 2:
+            raise ValueError("winget search requires a query")
+        query = " ".join(args[1:])
+        # Conservative query: alphanumerics, spaces and ._- only; no shell
+        # metacharacters, no paths, bounded length.
+        if (not query or len(query) > 128
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,127}", query)):
+            raise ValueError("invalid winget search query")
+        argv.extend([query, "--accept-source-agreements"])
+    return run_bounded(argv, timeout=timeout, limit=output_limit)
+
+
+def _parse_winget_table(stdout, limit, with_source):
+    """Parse `winget list/search` table output into package dicts."""
+    packages = []
+    for line in stdout.splitlines():
+        if not line.strip() or line.startswith("Name") or line.startswith("---"):
+            continue
+        parts = line.split(None, 3 if with_source else 2)
+        if len(parts) >= 2:
+            entry = {
+                "name": parts[0],
+                "id": parts[1],
+                "version": parts[2] if len(parts) > 2 else "",
+            }
+            if with_source:
+                entry["source"] = parts[3] if len(parts) > 3 else ""
+            packages.append(entry)
+        if len(packages) >= limit:
+            break
+    return packages
+
+
 def list_packages(limit: int = 50) -> Tuple[bool, List[Dict], Optional[str]]:
     """List installed packages using winget (if available).
 
     Returns (success, packages_list, error_message).
-    Each package: {"name": str, "id": str, "version": str}
+    Each package: {"name": str, "id": str, "version": str, "source": str}
     """
     if not is_windows():
         return False, [], "Not on Windows"
@@ -173,36 +224,15 @@ def list_packages(limit: int = 50) -> Tuple[bool, List[Dict], Optional[str]]:
     if shutil.which("winget") is None:
         return False, [], "winget not available"
 
-    import subprocess
     try:
-        result = subprocess.run(
-            ["winget", "list", "--accept-source-agreements"],
-            capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            return False, [], result.stderr or "winget failed"
-
-        # Parse winget list output (table format)
-        lines = result.stdout.splitlines()
-        packages = []
-        for line in lines:
-            # Skip header and separator lines
-            if not line.strip() or line.startswith("Name") or line.startswith("---"):
-                continue
-            parts = line.split(None, 3)
-            if len(parts) >= 2:
-                packages.append({
-                    "name": parts[0],
-                    "id": parts[1] if len(parts) > 1 else "",
-                    "version": parts[2] if len(parts) > 2 else "",
-                    "source": parts[3] if len(parts) > 3 else "",
-                })
-            if len(packages) >= limit:
-                break
-        return True, packages, None
-    except subprocess.TimeoutExpired:
-        return False, [], "winget timed out"
-    except Exception as error:
+        code, stdout, stderr = _run_winget(["list"], timeout=60)
+    except ValueError as error:
         return False, [], str(error)
+    except Exception as error:
+        return False, [], f"winget failed: {type(error).__name__}"
+    if code != 0:
+        return False, [], stderr or "winget failed"
+    return True, _parse_winget_table(stdout, limit, with_source=True), None
 
 
 def search_packages(query: str, limit: int = 20) -> Tuple[bool, List[Dict], Optional[str]]:
@@ -216,33 +246,15 @@ def search_packages(query: str, limit: int = 20) -> Tuple[bool, List[Dict], Opti
     if shutil.which("winget") is None:
         return False, [], "winget not available"
 
-    import subprocess
     try:
-        result = subprocess.run(
-            ["winget", "search", query, "--accept-source-agreements"],
-            capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            return False, [], result.stderr or "winget search failed"
-
-        lines = result.stdout.splitlines()
-        packages = []
-        for line in lines:
-            if not line.strip() or line.startswith("Name") or line.startswith("---"):
-                continue
-            parts = line.split(None, 2)
-            if len(parts) >= 2:
-                packages.append({
-                    "name": parts[0],
-                    "id": parts[1] if len(parts) > 1 else "",
-                    "version": parts[2] if len(parts) > 2 else "",
-                })
-            if len(packages) >= limit:
-                break
-        return True, packages, None
-    except subprocess.TimeoutExpired:
-        return False, [], "winget search timed out"
-    except Exception as error:
+        code, stdout, stderr = _run_winget(["search", query], timeout=30)
+    except ValueError as error:
         return False, [], str(error)
+    except Exception as error:
+        return False, [], f"winget search failed: {type(error).__name__}"
+    if code != 0:
+        return False, [], stderr or "winget search failed"
+    return True, _parse_winget_table(stdout, limit, with_source=False), None
 
 
 def format_services_table(services: List[Dict]) -> str:

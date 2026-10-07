@@ -145,5 +145,130 @@ class TestGetServiceStatus(unittest.TestCase):
             self.assertIn("Invalid", error)
 
 
+class TestWingetPolicy(unittest.TestCase):
+    """_run_winget must enforce a narrow subcommand/query policy and use
+    process_output.run_bounded (never a raw subprocess.run)."""
+
+    def test_list_allowed(self):
+        from src.windows_system_actions import _run_winget
+        with patch('src.process_output.run_bounded', return_value=(0, "out", "")) as runner:
+            _run_winget(["list"])
+        runner.assert_called_once()
+        argv = runner.call_args[0][0]
+        self.assertEqual(argv[0], "winget")
+        self.assertEqual(argv[1], "list")
+
+    def test_search_with_valid_query_allowed(self):
+        from src.windows_system_actions import _run_winget
+        with patch('src.process_output.run_bounded', return_value=(0, "out", "")) as runner:
+            _run_winget(["search", "python 3.12"])
+        argv = runner.call_args[0][0]
+        self.assertEqual(argv[1], "search")
+        self.assertIn("python 3.12", argv)
+
+    def test_unknown_subcommand_rejected(self):
+        from src.windows_system_actions import _run_winget
+        with self.assertRaises(ValueError):
+            _run_winget(["install", "evil"])
+        with self.assertRaises(ValueError):
+            _run_winget(["uninstall", "x"])
+        with self.assertRaises(ValueError):
+            _run_winget([])
+
+    def test_search_requires_query(self):
+        from src.windows_system_actions import _run_winget
+        with self.assertRaises(ValueError):
+            _run_winget(["search"])
+
+    def test_search_rejects_shell_metacharacters(self):
+        from src.windows_system_actions import _run_winget
+        for bad in ("foo; rm -rf /", "foo|bar", "$(whoami)", "a && b", "x`y`"):
+            with self.subTest(query=bad):
+                with self.assertRaises(ValueError):
+                    _run_winget(["search", bad])
+
+    def test_search_rejects_paths(self):
+        from src.windows_system_actions import _run_winget
+        with self.assertRaises(ValueError):
+            _run_winget(["search", "C:\\Users\\x"])
+        with self.assertRaises(ValueError):
+            _run_winget(["search", "/etc/passwd"])
+
+    def test_search_rejects_overlong_query(self):
+        from src.windows_system_actions import _run_winget
+        with self.assertRaises(ValueError):
+            _run_winget(["search", "a" * 200])
+
+    def test_run_bounded_receives_timeout_and_limit(self):
+        from src.windows_system_actions import _run_winget
+        with patch('src.process_output.run_bounded', return_value=(0, "", "")) as runner:
+            _run_winget(["list"], timeout=42, output_limit=1234)
+        kwargs = runner.call_args[1]
+        self.assertEqual(kwargs["timeout"], 42)
+        self.assertEqual(kwargs["limit"], 1234)
+
+
+class TestWingetTableParser(unittest.TestCase):
+    def test_parse_list_with_source(self):
+        from src.windows_system_actions import _parse_winget_table
+        stdout = "Name      Id          Version   Source\n---       --          -------   ------\nPython    Python.Python 3.12.0  winget\nGit       Git.Git       2.40.0    winget\n"
+        packages = _parse_winget_table(stdout, limit=50, with_source=True)
+        self.assertEqual(len(packages), 2)
+        self.assertEqual(packages[0]["name"], "Python")
+        self.assertEqual(packages[0]["id"], "Python.Python")
+        self.assertEqual(packages[0]["version"], "3.12.0")
+        self.assertEqual(packages[0]["source"], "winget")
+
+    def test_parse_search_without_source(self):
+        from src.windows_system_actions import _parse_winget_table
+        stdout = "Name      Id          Version\n---       --          -------\nPython    Python.Python 3.12.0\n"
+        packages = _parse_winget_table(stdout, limit=50, with_source=False)
+        self.assertEqual(len(packages), 1)
+        self.assertNotIn("source", packages[0])
+
+    def test_parse_respects_limit(self):
+        from src.windows_system_actions import _parse_winget_table
+        stdout = "\n".join(f"Pkg{i}  Id{i}  1.0" for i in range(10))
+        packages = _parse_winget_table(stdout, limit=3, with_source=False)
+        self.assertEqual(len(packages), 3)
+
+    def test_parse_empty(self):
+        from src.windows_system_actions import _parse_winget_table
+        self.assertEqual(_parse_winget_table("", limit=10, with_source=True), [])
+
+
+class TestListPackagesUsesRunBounded(unittest.TestCase):
+    def test_list_packages_goes_through_run_winget(self):
+        with patch('src.windows_system_actions.is_windows', return_value=True):
+            with patch('shutil.which', return_value=r"C:\winget.exe"):
+                with patch('src.windows_system_actions._run_winget',
+                           return_value=(0, "Name Id Version Source\n--- -- ------- -----\nPkg Id 1.0 winget\n", "")) as winget:
+                    from src.windows_system_actions import list_packages
+                    ok, packages, error = list_packages()
+        self.assertTrue(ok)
+        winget.assert_called_once_with(["list"], timeout=60)
+        self.assertEqual(packages[0]["name"], "Pkg")
+
+    def test_search_packages_goes_through_run_winget(self):
+        with patch('src.windows_system_actions.is_windows', return_value=True):
+            with patch('shutil.which', return_value=r"C:\winget.exe"):
+                with patch('src.windows_system_actions._run_winget',
+                           return_value=(0, "Name Id Version\n--- -- -------\nPkg Id 1.0\n", "")) as winget:
+                    from src.windows_system_actions import search_packages
+                    ok, packages, error = search_packages("pkg")
+        self.assertTrue(ok)
+        winget.assert_called_once_with(["search", "pkg"], timeout=30)
+
+    def test_no_subprocess_run_in_module(self):
+        """The module must not call subprocess.run or import subprocess directly."""
+        import inspect
+        import src.windows_system_actions as module
+        source = inspect.getsource(module)
+        # A real call would look like subprocess.run( ... ); a bare import is
+        # `import subprocess`. Docstring mentions are fine.
+        self.assertNotIn("subprocess.run(", source)
+        self.assertNotIn("import subprocess", source)
+
+
 if __name__ == "__main__":
     unittest.main()
