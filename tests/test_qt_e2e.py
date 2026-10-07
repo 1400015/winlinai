@@ -36,15 +36,16 @@ class TestQtE2EBase(unittest.TestCase):
         self.config = self._make_config()
 
     def _make_config(self):
-        """Create a mock config manager."""
+        """Create a fake config manager with persistent get/set state."""
         config = Mock()
-        config.get = Mock(side_effect=lambda key, default=None: {
+        values = {
             "app.expert_mode": False,
             "app.tray_toggle_on_click": True,
             "ui.theme": "dark",
             "features.expert_mode": True,
-        }.get(key, default))
-        config.set = Mock()
+        }
+        config.get = Mock(side_effect=lambda key, default=None: values.get(key, default))
+        config.set = Mock(side_effect=lambda key, value: values.__setitem__(key, value))
         config.get_api_key = Mock(return_value=None)
         config.api_key_env_var = Mock(return_value="TEST_KEY")
         config.get_api_key_env_override = Mock(return_value=None)
@@ -546,6 +547,8 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
             chat.input.setText("hi")
             chat._on_send()
             chat._worker_thread.join(timeout=5)
+        # Deliver the worker's queued signals to the UI before asserting.
+        self.app.processEvents()
         self.assertIn("Hello from AI", chat.log.toPlainText())
 
     def test_provider_failure_falls_back_to_offline(self):
@@ -556,6 +559,8 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
             chat.input.setText("hello offline")
             chat._on_send()
             chat._worker_thread.join(timeout=5)
+        # Deliver the worker's queued signals to the UI before asserting.
+        self.app.processEvents()
         log_text = chat.log.toPlainText()
         self.assertIn(i18n._("(Provider unavailable, answered offline)"), log_text)
 
@@ -575,6 +580,8 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
             chat._on_send()
             chat._on_stop_clicked()
             chat._worker_thread.join(timeout=5)
+        # Deliver the worker's queued signals to the UI before asserting.
+        self.app.processEvents()
         self.assertIn(i18n._("Request cancelled."), chat.log.toPlainText())
 
 

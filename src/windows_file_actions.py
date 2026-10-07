@@ -18,11 +18,13 @@ from __future__ import annotations
 import difflib
 import hashlib
 import logging
+import ntpath
 import os
+import re
 import sys
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -72,24 +74,57 @@ def get_user_home() -> Path:
     return Path.home()
 
 
+_WINDOWS_ROOT_RE = re.compile(r"^[A-Za-z]:[\\/]|^\\\\")
+
+
+_WIN_ENV_RE = re.compile(r"%(\w+)%")
+
+
+def _expand_windows_env(path: str) -> str:
+    """Expand %VAR% references from os.environ on any host OS."""
+    def replace(match):
+        return os.environ.get(match.group(1), "")
+    return _WIN_ENV_RE.sub(replace, path)
+
+
+def _is_windows_style(path: str) -> bool:
+    """True for drive-letter (C:\\...) or UNC (\\\\server\\share) paths."""
+    return bool(_WINDOWS_ROOT_RE.match(path.replace("/", "\\")))
+
+
+def _normalize_pure(path: str) -> PureWindowsPath:
+    """Normalize with Windows semantics for security decisions.
+
+    Works identically on Windows and on the Linux CI: ``ntpath`` interprets
+    drive letters, separators and dot segments, and ``PureWindowsPath``
+    exposes the resulting components without touching the filesystem.
+    """
+    expanded = os.path.expandvars(_expand_windows_env(path))
+    expanded = os.path.expanduser(expanded)
+    if _is_windows_style(expanded):
+        return PureWindowsPath(ntpath.normpath(expanded))
+    return PureWindowsPath(os.path.normpath(expanded))
+
+
 def normalize_windows_path(path: str) -> Path:
-    """Normalize a Windows path (expand env vars, resolve relative, etc.).
+    """Normalize a path with Windows semantics, regardless of the host OS.
+
+    Drive-letter and UNC paths are interpreted with ``ntpath`` rules so the
+    behaviour of this module is identical on Windows and on the Linux CI.
+    Relative paths resolve against the current directory using the host's
+    path module, matching the behaviour of the running application.
 
     Handles:
     - Environment variables (%USERPROFILE%, %APPDATA%, etc.)
     - Tilde expansion (~)
     - Relative paths
     - Forward/backward slashes
+    - Dot segments (.., .)
     """
-    # Expand environment variables
-    path = os.path.expandvars(path)
-    # Expand tilde
-    path = os.path.expanduser(path)
-    # Normalize slashes and resolve
-    path = os.path.normpath(path)
-    # Convert to absolute
-    path = os.path.abspath(path)
-    return Path(path)
+    expanded = os.path.expanduser(os.path.expandvars(_expand_windows_env(path)))
+    if _is_windows_style(expanded):
+        return Path(str(_normalize_pure(path)))
+    return Path(os.path.normpath(expanded)).absolute()
 
 
 def is_sensitive_windows_path(path: str) -> bool:
@@ -105,7 +140,7 @@ def is_sensitive_windows_path(path: str) -> bool:
     try:
         if not path or not isinstance(path, str):
             return True  # Fail closed on empty/invalid input
-        normalized = normalize_windows_path(path)
+        normalized = _normalize_pure(path)
         path_str = str(normalized).lower()
 
         # Check sensitive directories
@@ -146,27 +181,24 @@ def is_allowed_windows_path(path: str, allowed_dirs: Optional[List[str]] = None)
         True if the path is allowed
     """
     try:
-        normalized = normalize_windows_path(path)
+        normalized = _normalize_pure(path)
 
         # Block sensitive paths
         if is_sensitive_windows_path(str(normalized)):
             return False
 
         # Check if inside home
-        home = get_user_home()
-        try:
-            normalized.relative_to(home)
+        home = PureWindowsPath(str(get_user_home()))
+        if normalized.is_relative_to(home):
             return True
-        except ValueError:
-            pass
 
         # Check allowed directories
         for allowed_dir in allowed_dirs or ():
             try:
-                allowed = normalize_windows_path(allowed_dir)
-                normalized.relative_to(allowed)
-                return True
-            except ValueError:
+                allowed = _normalize_pure(allowed_dir)
+                if normalized.is_relative_to(allowed):
+                    return True
+            except (ValueError, TypeError):
                 continue
 
         return False
@@ -180,13 +212,11 @@ def is_privileged_windows_path(path: str) -> bool:
     On Windows, paths outside the user's home typically require elevation.
     """
     try:
-        normalized = normalize_windows_path(path)
-        home = get_user_home()
-        try:
-            normalized.relative_to(home)
+        normalized = _normalize_pure(path)
+        home = PureWindowsPath(str(get_user_home()))
+        if normalized.is_relative_to(home):
             return False  # Inside home, no elevation needed
-        except ValueError:
-            return True  # Outside home, may need elevation
+        return True  # Outside home, may need elevation
     except Exception:
         return True
 

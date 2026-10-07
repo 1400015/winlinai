@@ -8,13 +8,32 @@ This is the "presence check" from the improvement plan (task A.2/A.3):
 - build-installer.ps1 and prepare-release.ps1 must have valid PowerShell syntax
 """
 import ast
+import functools
 import re
+import shutil
 import subprocess
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INSTALLER_DIR = PROJECT_ROOT / "installer"
+
+
+def _resolve_repo_path(relative: str) -> Path:
+    """Resolve an installer-relative Windows path against the repo root."""
+    parts = PureWindowsPath(relative).parts
+    return PROJECT_ROOT.joinpath(*parts)
+
+
+def requires_powershell(test):
+    """Skip when no PowerShell parser is available (non-Windows runners)."""
+    @functools.wraps(test)
+    def wrapper(self):
+        executable = shutil.which("pwsh") or shutil.which("powershell")
+        if executable is None:
+            self.skipTest("PowerShell not available on this host")
+        return test(self, executable)
+    return wrapper
 
 
 class TestInnoSetupReferences(unittest.TestCase):
@@ -32,7 +51,7 @@ class TestInnoSetupReferences(unittest.TestCase):
         """SetupIconFile must point to an existing file."""
         match = re.search(r"SetupIconFile=(\S+)", self.iss_text)
         self.assertIsNotNone(match, "SetupIconFile not found in .iss")
-        icon_path = PROJECT_ROOT / match.group(1)
+        icon_path = _resolve_repo_path(match.group(1))
         self.assertTrue(icon_path.is_file(),
                         f"SetupIconFile does not exist: {icon_path}")
 
@@ -46,7 +65,7 @@ class TestInnoSetupReferences(unittest.TestCase):
             # Build artifacts (generated during build) are allowed to be missing
             if source.startswith("dist\\") or source.startswith("installer\\vcredist"):
                 continue
-            path = PROJECT_ROOT / source.replace("\\", "/")
+            path = _resolve_repo_path(source)
             # May contain wildcards — check parent directory
             if "*" in source:
                 parent = path.parent
@@ -107,7 +126,7 @@ class TestPyInstallerSpec(unittest.TestCase):
 class TestPowerShellScriptsSyntax(unittest.TestCase):
     """Validate PowerShell syntax of installer scripts."""
 
-    def _validate_ps_syntax(self, script_path: Path) -> tuple:
+    def _validate_ps_syntax(self, executable: str, script_path: Path) -> tuple:
         """Return (ok, errors) using PowerShell's parser."""
         ps_script = f"""
 $errors = $null
@@ -125,23 +144,25 @@ if ($errors.Count -gt 0) {{
 """
         try:
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_script],
+                [executable, "-NoProfile", "-Command", ps_script],
                 capture_output=True, text=True, timeout=30)
             ok = result.returncode == 0 and "OK" in result.stdout
             return ok, result.stdout + result.stderr
         except Exception as error:
             return False, str(error)
 
-    def test_build_installer_ps1_syntax(self):
+    @requires_powershell
+    def test_build_installer_ps1_syntax(self, executable):
         script = INSTALLER_DIR / "build-installer.ps1"
         self.assertTrue(script.is_file())
-        ok, output = self._validate_ps_syntax(script)
+        ok, output = self._validate_ps_syntax(executable, script)
         self.assertTrue(ok, f"build-installer.ps1 has syntax errors:\n{output}")
 
-    def test_prepare_release_ps1_syntax(self):
+    @requires_powershell
+    def test_prepare_release_ps1_syntax(self, executable):
         script = INSTALLER_DIR / "prepare-release.ps1"
         self.assertTrue(script.is_file())
-        ok, output = self._validate_ps_syntax(script)
+        ok, output = self._validate_ps_syntax(executable, script)
         self.assertTrue(ok, f"prepare-release.ps1 has syntax errors:\n{output}")
 
 

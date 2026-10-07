@@ -12,7 +12,8 @@ class TestGtkCssColors(unittest.TestCase):
             gi.require_version('Gtk', '3.0')
             gi.require_version('Gdk', '3.0')
             from gi.repository import Gdk, Gtk
-            from src.main_window import MainWindow, contrasting_text_color, safe_color
+            from src.main_window import MainWindow
+            from src.theme_utils import contrasting_text_color, safe_color
         except (ImportError, ValueError) as error:
             raise unittest.SkipTest('GTK3 unavailable: ' + str(error))
         if not Gtk.init_check()[0]:

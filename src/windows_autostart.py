@@ -115,14 +115,16 @@ def is_autostart_enabled(read_value=None):
     """Check whether autostart is currently enabled.
 
     Returns True/False on Windows; None when the status cannot be determined
-    (off Windows, missing winreg, or registry error).
+    (off Windows, missing winreg, or registry error). An injected read_value
+    is honoured on any platform so the status contract is testable everywhere;
+    production code never injects it.
     """
-    if not is_windows():
-        return None
-    backends = windows_backends()
-    if backends is None:
-        return None
     if read_value is None:
+        if not is_windows():
+            return None
+        backends = windows_backends()
+        if backends is None:
+            return None
         read_value = backends[0]
     try:
         return read_value(RUN_KEY, AUTOSTART_VALUE_NAME) is not None

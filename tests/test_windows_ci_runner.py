@@ -25,16 +25,23 @@ class TestWindowsCi(unittest.TestCase):
             self.assertEqual(unexpected_skips(self.result(identifier, reason)), [])
             self.assertEqual(len(unexpected_skips(self.result(identifier, 'PySide6 unavailable'))), 1)
 
-    def test_discovery_excludes_linux_only_tests(self):
+    def test_discovery_includes_native_windows_and_qt_tests(self):
         loaded = []
         loader = SimpleNamespace(discover=lambda directory, pattern: loaded.append(pattern) or [])
         with tempfile.TemporaryDirectory() as directory:
             for name in ('test_windows_foundation_storage.py', 'test_windows_foundation_bootstrap.py',
-                         'test_qt_phase4a.py', 'test_device_dialogs.py', 'test_windows_phase1.py'):
+                         'test_windows_file_actions.py', 'test_windows_screenshot.py',
+                         'test_windows_system_actions.py', 'test_windows_phase1.py',
+                         'test_pwsh_output.py', 'test_qt_phase4a.py',
+                         'test_device_dialogs.py'):
                 (Path(directory) / name).touch()
             suite = discover_windows_suite(directory, loader)
-        self.assertEqual(loaded, ['test_qt_phase4a.py', 'test_windows_foundation_bootstrap.py',
-                                  'test_windows_foundation_storage.py'])
+        self.assertEqual(loaded, ['test_pwsh_output.py', 'test_qt_phase4a.py',
+                                  'test_windows_file_actions.py',
+                                  'test_windows_foundation_bootstrap.py',
+                                  'test_windows_foundation_storage.py',
+                                  'test_windows_phase1.py', 'test_windows_screenshot.py',
+                                  'test_windows_system_actions.py'])
         self.assertEqual(suite.countTestCases(), 0)
 
 
