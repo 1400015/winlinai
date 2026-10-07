@@ -192,6 +192,11 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         self._cancel_event = threading.Event()
         self._worker = None
         self._worker_thread = None
+        # In-flight request isolation: the session that originated the request
+        # and a request id. Responses are always stored in the originating
+        # session, even if the user switches, archives or deletes meanwhile.
+        self._request_session_id = None
+        self._request_serial = 0
         self._build()
         if self.send_requested is not None:
             self.send_requested.connect(self._on_send)
@@ -400,6 +405,10 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
 
         # Track message for provider context
         self._pending_messages.append({"role": "user", "content": text or "[image]"})
+        # Capture the originating session and a request id before dispatching.
+        # Every path that stores the answer must honour this pair.
+        self._request_serial += 1
+        self._request_session_id = self._current_session_id()
 
         # Show thinking indicator
         self._show_thinking()
@@ -446,13 +455,10 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         answer = offline_reply_text(self.offline, text, lang) or ""
         self._hide_thinking()
-        self.append_message(i18n._("AI"), answer)
+        self._store_response(answer)
         self._pending_messages.append({"role": "assistant", "content": answer})
-        if self.history_store is not None:
-            try:
-                self.history_store.append("assistant", answer)
-            except Exception as error:
-                logger.warning("History write failed: %s", type(error).__name__)
+        self._finish_request()
+        self.append_message(i18n._("AI"), answer)
         if self.response_received is not None:
             self.response_received.emit(answer)
 
@@ -506,17 +512,17 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         """Handle provider response (delivered by the worker's finished signal)."""
         from . import i18n
         self._hide_thinking()
-        self.append_message(i18n._("AI"), text)
-        self._pending_messages.append({"role": "assistant", "content": text})
-        if self.history_store is not None:
-            try:
-                self.history_store.append("assistant", text)
-            except Exception as error:
-                logger.warning("History write failed: %s", type(error).__name__)
-        if self.response_received is not None:
-            self.response_received.emit(text)
-        # Offer to write any ``` file blocks in the reply (expert mode only)
-        self._offer_file_blocks(text)
+        # The answer is stored in the session that originated the request;
+        # the visible log only advances when that session is still shown.
+        self._store_response(text)
+        if self._request_session_is_selected():
+            self._pending_messages.append({"role": "assistant", "content": text})
+            self.append_message(i18n._("AI"), text)
+            if self.response_received is not None:
+                self.response_received.emit(text)
+            # Offer to write any ``` file blocks in the reply (expert mode only)
+            self._offer_file_blocks(text)
+        self._finish_request()
 
     @_Slot(str)
     def _on_provider_failed(self, last_user_message):
@@ -525,22 +531,83 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         answer = offline_reply_text(self.offline, last_user_message, lang) or ""
         self._hide_thinking()
-        self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
-        self._pending_messages.append({"role": "assistant", "content": answer})
-        if self.history_store is not None:
-            try:
-                self.history_store.append("assistant", answer)
-            except Exception as error:
-                logger.warning("History write failed: %s", type(error).__name__)
+        self._store_response(answer)
+        if self._request_session_is_selected():
+            self._pending_messages.append({"role": "assistant", "content": answer})
+            self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
+        self._finish_request()
 
     @_Slot(str)
     def _on_provider_cancelled(self, last_user_message):
         """User cancelled the in-flight provider request."""
         from . import i18n
         self._hide_thinking()
-        self.append_message(i18n._("System"), i18n._("Request cancelled."))
-        self._pending_messages.append(
-            {"role": "system", "content": "Request cancelled by user."})
+        # A cancelled request stores no answer in any session.
+        if self._request_session_is_selected():
+            self.append_message(i18n._("System"), i18n._("Request cancelled."))
+            self._pending_messages.append(
+                {"role": "system", "content": "Request cancelled by user."})
+        self._finish_request()
+
+    def _current_session_id(self):
+        """The history session that a send right now belongs to."""
+        if self.history_store is None:
+            return None
+        try:
+            # HistoryStore.active_session_id is a property.
+            return self.history_store.active_session_id
+        except Exception:
+            return None
+
+    def _store_response(self, answer):
+        """Store an assistant answer in the session that originated the request.
+
+        The captured session id is used explicitly: even if the user switched,
+        archived or deleted the conversation meanwhile, the answer lands in
+        the conversation that asked the question, or nowhere when that
+        conversation no longer exists.
+        """
+        session_id = self._request_session_id
+        if self.history_store is None or session_id is None:
+            return
+        try:
+            sessions = self.history_store.list_sessions(include_archived=True)
+        except Exception as error:
+            logger.warning("History read failed: %s", type(error).__name__)
+            return
+        if not any(session["id"] == session_id for session in sessions):
+            # The originating session disappeared; drop the pending state and
+            # let the visible line below explain where the answer went.
+            self._request_session_id = None
+            return
+        try:
+            self.history_store.append("assistant", answer, session_id=session_id)
+        except Exception as error:
+            logger.warning("History write failed: %s", type(error).__name__)
+
+    def _request_session_is_selected(self):
+        """True when the originating session is still the one being shown."""
+        return (self._request_session_id is not None
+                and self._request_session_id == self._current_session_id())
+
+    def _finish_request(self):
+        """Clear the in-flight request state after a response settles."""
+        self._request_session_id = None
+
+    def request_in_flight(self):
+        """True while a provider request is pending (Stop button active)."""
+        return self._worker_thread is not None and self._worker_thread.is_alive()
+
+    def _session_action_allowed(self):
+        """New/Open/Archive/Delete are refused while a request is in flight.
+
+        Chosen contract: the actions are refused instead of queued, and the
+        refusal is visible, so the answer always lands in the conversation
+        that originated it and no background write can race a session
+        switch. The guard is advisory for callers (menus/dialogs); the
+        store itself still routes by captured session id.
+        """
+        return not self.request_in_flight()
 
     def _expert_mode_enabled(self):
         try:
@@ -605,6 +672,12 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         """Render the active (or given) session's stored messages."""
         if self.history_store is None:
             return
+        if not self._session_action_allowed():
+            from . import i18n
+            self.append_message(
+                i18n._("System"),
+                i18n._("Wait for the pending answer before switching conversations."))
+            return
         try:
             entries = self.history_store.load_messages(session_id)
         except Exception as error:
@@ -642,6 +715,12 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
 
     def clear_conversation(self):
         """Clear the current conversation (new session)."""
+        if not self._session_action_allowed():
+            from . import i18n
+            self.append_message(
+                i18n._("System"),
+                i18n._("Wait for the pending answer before starting a new conversation."))
+            return
         if self.history_store is not None:
             try:
                 self.history_store.create_session(select=True)

@@ -7,6 +7,7 @@ They require PySide6 and run with QT_QPA_PLATFORM=offscreen on CI.
 """
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -583,6 +584,134 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
         # Deliver the worker's queued signals to the UI before asserting.
         self.app.processEvents()
         self.assertIn(i18n._("Request cancelled."), chat.log.toPlainText())
+
+
+class TestQtSessionIsolation(TestQtE2EBase):
+    """A pending response must land in the conversation that originated it."""
+
+    def _make_chat_with_history(self, ai_client):
+        from src.qt_chat import QtChatWidget
+        from src.history_store import HistoryStore
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+        history_path = Path(self.temp_dir.name) / "history.json"
+        store = HistoryStore(str(history_path))
+        self.addCleanup(store.close)
+        system_utils = SystemUtils(self.config)
+        offline = OfflineAssistant(system_utils, self.config)
+        chat = QtChatWidget(self.config, offline, ai_client=ai_client, history_store=store)
+        self.addCleanup(chat.close)
+        return chat, store
+
+    def _messages(self, store, session_id):
+        return store.load_messages(session_id)
+
+    def test_answer_lands_in_originating_session_after_switch(self):
+        ai_client = Mock()
+        release = threading.Event()
+
+        def slow_chat(messages, images=None, cancel_event=None):
+            release.wait(timeout=5)
+            return "answer to session A"
+
+        ai_client.chat.side_effect = slow_chat
+        chat, store = self._make_chat_with_history(ai_client)
+        session_a = store.active_session_id
+        store.create_session(select=True)
+        session_b = store.active_session_id
+        chat.load_session(session_b)
+        with patch("src.qt_chat.should_use_provider", return_value=True):
+            chat._request_session_id = session_a  # simulate the send that started in A
+            chat._pending_messages.append({"role": "user", "content": "question for A"})
+            release.set()
+            chat._on_provider_response("answer to session A")
+        self.app.processEvents()
+        # The answer is stored in A, the session that originated the request.
+        stored_a = [m for m in self._messages(store, session_a) if m["role"] == "assistant"]
+        self.assertEqual(len(stored_a), 1)
+        self.assertEqual(stored_a[0]["content"], "answer to session A")
+        # Session B, the currently shown one, received nothing.
+        stored_b = [m for m in self._messages(store, session_b) if m["role"] == "assistant"]
+        self.assertEqual(stored_b, [])
+        # The visible log is session B's; the answer is not shown there.
+        self.assertNotIn("answer to session A", chat.log.toPlainText())
+
+    def test_session_switch_refused_while_request_in_flight(self):
+        ai_client = Mock()
+        chat, store = self._make_chat_with_history(ai_client)
+        # Simulate a request in flight with a thread that stays alive.
+        release = threading.Event()
+
+        def busy():
+            release.wait(timeout=5)
+
+        chat._worker_thread = threading.Thread(target=busy)
+        chat._worker_thread.start()
+        self.addCleanup(release.set)
+        self.addCleanup(chat._worker_thread.join)
+        store.create_session(select=False)
+        other = store.list_sessions()[0]["id"]
+        active = store.active_session_id
+        chat.load_session(other)
+        self.assertNotEqual(store.active_session_id, other)
+        self.assertIn(i18n._("Wait for the pending answer before switching conversations."),
+                      chat.log.toPlainText())
+        chat.clear_conversation()
+        self.assertEqual(store.active_session_id, active)
+
+    def test_archive_or_delete_of_origin_session_does_not_write_to_survivor(self):
+        ai_client = Mock()
+        chat, store = self._make_chat_with_history(ai_client)
+        session_a = store.active_session_id
+        store.create_session(select=True)
+        session_b = store.active_session_id
+        # The request originated in A; A was deleted while it was pending.
+        store.delete_session(session_a)
+        chat._request_session_id = session_a
+        chat._on_provider_response("late answer")
+        self.app.processEvents()
+        # Nothing was written to B, the session that stayed active.
+        stored_b = [m for m in self._messages(store, session_b) if m["role"] == "assistant"]
+        self.assertEqual(stored_b, [])
+        # The pending state was cleared.
+        self.assertIsNone(chat._request_session_id)
+
+    def test_cancelled_request_stores_no_answer(self):
+        ai_client = Mock()
+        chat, store = self._make_chat_with_history(ai_client)
+        session_a = store.active_session_id
+        chat._request_session_id = session_a
+        chat._on_provider_cancelled("long question")
+        self.app.processEvents()
+        stored = [m for m in self._messages(store, session_a) if m["role"] == "assistant"]
+        self.assertEqual(stored, [])
+
+    def test_offline_answer_follows_the_same_contract(self):
+        from src.qt_chat import QtChatWidget
+        from src.history_store import HistoryStore
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+        history_path = Path(self.temp_dir.name) / "history.json"
+        store = HistoryStore(str(history_path))
+        self.addCleanup(store.close)
+        system_utils = SystemUtils(self.config)
+        offline = OfflineAssistant(system_utils, self.config)
+        chat = QtChatWidget(self.config, offline, ai_client=Mock(), history_store=store)
+        self.addCleanup(chat.close)
+        session_a = store.active_session_id
+        store.create_session(select=True)
+        session_b = store.active_session_id
+        chat.load_session(session_b)
+        with patch("src.qt_chat.should_use_provider", return_value=False), \
+                patch("src.qt_chat.offline_reply_text", return_value="offline answer"):
+            chat._request_session_id = session_a
+            chat._send_to_offline("question for A")
+        self.app.processEvents()
+        stored_a = [m for m in self._messages(store, session_a) if m["role"] == "assistant"]
+        self.assertEqual(len(stored_a), 1)
+        self.assertEqual(stored_a[0]["content"], "offline answer")
+        stored_b = [m for m in self._messages(store, session_b) if m["role"] == "assistant"]
+        self.assertEqual(stored_b, [])
 
 
 if __name__ == "__main__":

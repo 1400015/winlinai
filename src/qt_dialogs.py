@@ -429,9 +429,31 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
             self.on_new(session_id)
         self.reload()
 
+    def _session_change_refused(self):
+        """Refuse session changes while the chat has a request in flight.
+
+        The chat widget (when reachable through the parent chain) owns the
+        pending-request state; this dialog only surfaces the refusal.
+        """
+        widget = self.parent()
+        while widget is not None:
+            guard = getattr(widget, "chat", None)
+            if guard is not None and hasattr(guard, "request_in_flight"):
+                if guard.request_in_flight():
+                    from . import i18n
+                    QtWidgets.QMessageBox.information(
+                        self, i18n._("Conversation History"),
+                        i18n._("Wait for the pending answer before changing conversations."))
+                    return True
+                return False
+            widget = widget.parent()
+        return False
+
     def _open(self):
         session_id = self.selected_session_id()
         if session_id is None:
+            return
+        if self._session_change_refused():
             return
         self.store.select_session(session_id)
         if callable(self.on_open):
@@ -442,6 +464,8 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         """Toggle archive status of the selected session."""
         item = self._selected_item()
         if item is None:
+            return
+        if self._session_change_refused():
             return
         session_id = item.data(QtCore.Qt.UserRole)
         is_archived = bool(item.data(QtCore.Qt.UserRole + 1))
@@ -466,6 +490,8 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         from . import i18n
         item = self._selected_item()
         if item is None:
+            return
+        if self._session_change_refused():
             return
         session_id = item.data(QtCore.Qt.UserRole)
         reply = QtWidgets.QMessageBox.question(
