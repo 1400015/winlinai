@@ -48,7 +48,7 @@ class TestWindowsStorageRouting(unittest.TestCase):
                 # Match the real backend: a rename by handle succeeds while
                 # readers hold the target with FILE_SHARE_DELETE.
                 import win32file
-                win32file.MoveFileEx(source, target,
+                win32file.MoveFileEx(str(source), str(target),
                                      _win32con_routing.MOVEFILE_REPLACE_EXISTING)
             else:
                 os.replace(source, target)

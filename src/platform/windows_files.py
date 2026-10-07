@@ -319,6 +319,19 @@ def _identity(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
+def handle_identity(descriptor):
+    """Return the native (volume, index) identity of an open CRT descriptor.
+
+    The CRT reports st_ino=0 for open_osfhandle descriptors, so the POSIX
+    stat fields cannot identify a file on Windows; this uses the same native
+    information the storage layer already trusts.
+    """
+    msvcrt, _, _, con, file, _ = _modules()
+    handle = msvcrt.get_osfhandle(descriptor)
+    information = _call(file.GetFileInformationByHandle, handle)
+    return information[4], (information[8] << 32) | information[9]
+
+
 def owned_identity(path):
     """Revalidate the parent ACL and file identity without following links."""
     with guarded_path(path) as (path, parent):

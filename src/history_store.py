@@ -253,10 +253,27 @@ class HistoryStore:
                         shutil.copyfileobj(source, target, 65536)
                         target.flush()
                         os.fsync(target.fileno())
-                    current = os.stat(str(path), follow_symlinks=False)
-                    if (_file_identity(original) != _file_identity(current)
-                            or _file_identity(original) != _file_identity(os.fstat(source.fileno()))):
-                        raise OSError("History changed during recovery; original file preserved")
+                    if os.name == 'nt':
+                        # On Windows the CRT reports st_ino=0 for open_osfhandle
+                        # descriptors while os.stat by name returns the real file
+                        # index, so the POSIX stat fields cannot be compared
+                        # across the two. Compare the open descriptor's native
+                        # identity with a fresh name-based open instead: an
+                        # external replacement of the file changes the index.
+                        from .platform import windows_files
+                        opened = windows_files.handle_identity(source.fileno())
+                        current_fd = open_regular(path)
+                        try:
+                            current = windows_files.handle_identity(current_fd)
+                        finally:
+                            os.close(current_fd)
+                        if opened != current:
+                            raise OSError("History changed during recovery; original file preserved")
+                    else:
+                        current = os.stat(str(path), follow_symlinks=False)
+                        if (_file_identity(original) != _file_identity(current)
+                                or _file_identity(original) != _file_identity(os.fstat(source.fileno()))):
+                            raise OSError("History changed during recovery; original file preserved")
                     sync_directory(path.parent)
                     complete = True
                     atomic_json_write(path, document, max_bytes=MAX_HISTORY_BYTES)
