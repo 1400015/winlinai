@@ -426,7 +426,9 @@ with json_lock(sys.argv[1]):
     def test_failed_publication_keeps_the_previous_file_intact(self):
         atomic_json_write(self.path, {'step': 'before'})
         before = self.path.read_bytes()
-        descriptor, name = windows_files.private_temporary(self.directory, 'doomed-')
+        nested = self.directory / 'nested'
+        nested.mkdir()
+        descriptor, name = windows_files.private_temporary(nested, 'doomed-')
         with os.fdopen(descriptor, 'wb') as target:
             target.write(b'{"step": "doomed"}')
         self.addCleanup(lambda: Path(name).unlink(missing_ok=True))

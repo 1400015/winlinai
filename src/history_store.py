@@ -243,7 +243,8 @@ class HistoryStore:
         try:
             with json_lock(path):
                 source_fd = open_regular(path)
-                with os.fdopen(source_fd, "rb") as source:
+                source = os.fdopen(source_fd, "rb")
+                try:
                     original = os.fstat(source.fileno())
                     if not stat.S_ISREG(original.st_mode):
                         raise ValueError("History recovery requires a regular file")
@@ -276,7 +277,13 @@ class HistoryStore:
                             raise OSError("History changed during recovery; original file preserved")
                     sync_directory(path.parent)
                     complete = True
-                    atomic_json_write(path, document, max_bytes=MAX_HISTORY_BYTES)
+                finally:
+                    # The read handle is released before publication: the
+                    # Windows handle-based rename refuses to replace a target
+                    # held open, and the identity checks plus the stable sidecar
+                    # lock already serialize cooperating writers.
+                    source.close()
+                atomic_json_write(path, document, max_bytes=MAX_HISTORY_BYTES)
         except BaseException as error:
             if backup is not None:
                 if complete:
