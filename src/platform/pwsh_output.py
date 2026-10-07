@@ -26,14 +26,18 @@ _PWSH_ERROR_PREFIX = "powershell : "
 def wrap_cmdlet_json(cmdlet_argv):
     """Wrap a validated cmdlet argv so its output is JSON.
 
-    Returns an argv list for ``powershell -Command`` that pipes the cmdlet
-    output through ``ConvertTo-Json -Compress``. The cmdlet argv must already
-    be validated by :func:`shell_pwsh.validate_pwsh_arguments`.
+    Returns an argv list for ``powershell -EncodedCommand`` that pipes the
+    cmdlet output through ``ConvertTo-Json -Compress -Depth 10``. The cmdlet
+    argv must already be validated by
+    :func:`shell_pwsh.validate_pwsh_arguments`.
 
     Example:
         wrap_cmdlet_json(["Get-Service", "-Name", "wuauserv"])
-        → powershell -Command "Get-Service -Name 'wuauserv' | ConvertTo-Json -Compress"
+        → powershell -EncodedCommand <base64 of
+          "Get-Service -Name 'wuauserv' | ConvertTo-Json -Compress -Depth 10">
     """
+    from .shell_pwsh import launch_script
+
     if not cmdlet_argv:
         raise ValueError("empty cmdlet argv")
     # Quote single-argument values to survive the PowerShell parser.
@@ -47,8 +51,7 @@ def wrap_cmdlet_json(cmdlet_argv):
             parts.append("'{}'".format(escaped))
     cmdlet = " ".join(parts)
     script = "{} | ConvertTo-Json -Compress -Depth 10".format(cmdlet)
-    return ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive",
-            "-Command", script)
+    return launch_script(script)
 
 
 def parse_json_output(stdout, stderr="", returncode=0):
@@ -206,11 +209,14 @@ def normalize_output(data, probe_key=None):
     return data
 
 
-def run_probe(cmdlet_argv, runner=None, timeout=30, limit=1024 * 1024):
+def run_probe(cmdlet_argv, runner=None, timeout=30, limit=1024 * 1024, probe_key=None):
     """Build argv, execute via runner, and return normalized output.
 
     ``runner`` is a callable ``(argv, timeout, limit) -> (returncode, stdout, stderr)``.
     Defaults to ``process_output.run_bounded`` on Windows or POSIX.
+
+    ``probe_key`` is passed to :func:`normalize_output` to normalize the
+    parsed data (e.g. ``"services"``, ``"processes"``, ``"disk"``).
 
     Returns a dict: {"ok": bool, "data": Any, "error": str|None, "raw": str}
     """
@@ -238,6 +244,7 @@ def run_probe(cmdlet_argv, runner=None, timeout=30, limit=1024 * 1024):
                 "raw": ""}
 
     data, parse_error = parse_json_output(stdout, stderr, returncode)
+    data = normalize_output(data, probe_key)
 
     return {
         "ok": returncode == 0 and data is not None,

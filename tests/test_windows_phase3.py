@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from src.knowledge_loader import available_bundled_modules, compose_modules
 from src.local_knowledge import PROCEDURE_BY_ID
-from src.platform.shell_pwsh import launch_argv, validate_pwsh_arguments as validate_pwsh
+from src.platform.shell_pwsh import launch_argv, launch_script, validate_pwsh_arguments as validate_pwsh
 from src.platform.wsl_bridge import detect_wsl_distros, parse_wsl_list, probe_argv
 
 
@@ -160,6 +160,16 @@ class TestPowerShellPolicy(unittest.TestCase):
         self.assertTrue(script.endswith("Get-Service -Name 'wuauserv'"))
         self.assertIsNone(launch_argv(["Remove-Item", "-Path", "x"]))
         self.assertIsNone(launch_argv(["Get-Service; Remove-Item x"]))
+
+    def test_launch_script_encodes_ready_script(self):
+        import base64
+        argv = launch_script("Get-Date | ConvertTo-Json -Compress")
+        self.assertEqual(argv[:5],
+                         ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"))
+        script = base64.b64decode(argv[5]).decode("utf-16-le")
+        self.assertIn("$ErrorActionPreference = 'Stop'", script)
+        self.assertIn("[Console]::OutputEncoding", script)
+        self.assertTrue(script.endswith("Get-Date | ConvertTo-Json -Compress"))
 
 
 class TestPhase3KnowledgeModules(unittest.TestCase):

@@ -1,4 +1,5 @@
 """Tests for PowerShell output normalization (src/platform/pwsh_output.py)."""
+import base64
 import unittest
 
 from src.platform.pwsh_output import (
@@ -14,26 +15,31 @@ from src.platform.pwsh_output import (
 )
 
 
+def _decode_script(argv):
+    """Decode the -EncodedCommand payload from a launch argv."""
+    return base64.b64decode(argv[5]).decode("utf-16-le")
+
+
 class TestWrapCmdletJson(unittest.TestCase):
     def test_simple_cmdlet(self):
         argv = wrap_cmdlet_json(["Get-Service"])
         self.assertEqual(argv[:5],
-                         ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"))
-        script = argv[5]
+                         ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"))
+        script = _decode_script(argv)
         self.assertIn("Get-Service", script)
         self.assertIn("ConvertTo-Json", script)
         self.assertIn("-Compress", script)
 
     def test_cmdlet_with_parameters(self):
         argv = wrap_cmdlet_json(["Get-Service", "-Name", "wuauserv"])
-        script = argv[5]
+        script = _decode_script(argv)
         self.assertIn("Get-Service", script)
         self.assertIn("-Name", script)
         self.assertIn("'wuauserv'", script)
 
     def test_quotes_are_escaped(self):
         argv = wrap_cmdlet_json(["Get-Service", "-Name", "it's"])
-        script = argv[5]
+        script = _decode_script(argv)
         self.assertIn("'it''s'", script)
 
     def test_empty_argv_raises(self):
@@ -265,6 +271,34 @@ class TestRunProbe(unittest.TestCase):
         self.assertIn("ok", result)
         self.assertIn("data", result)
         self.assertIn("error", result)
+
+    def test_probe_key_normalizes_data(self):
+        def fake_runner(argv, timeout, limit):
+            return 0, '{"Name":"wuauserv","DisplayName":"Windows Update","Status":4,"StartType":2}', ""
+        result = run_probe(["Get-Service", "-Name", "wuauserv"],
+                           runner=fake_runner, probe_key="services")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["name"], "wuauserv")
+        self.assertEqual(result["data"]["display_name"], "Windows Update")
+
+    def test_probe_key_normalizes_list(self):
+        def fake_runner(argv, timeout, limit):
+            return 0, '[{"ProcessName":"a","Id":1,"CPU":0,"WorkingSet":1024},' \
+                      '{"ProcessName":"b","Id":2,"CPU":0,"WorkingSet":2048}]', ""
+        result = run_probe(["Get-Process"], runner=fake_runner, probe_key="processes")
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["data"]), 2)
+        self.assertEqual(result["data"][0]["name"], "a")
+        self.assertEqual(result["data"][1]["name"], "b")
+
+    def test_no_probe_key_returns_raw_data(self):
+        def fake_runner(argv, timeout, limit):
+            return 0, '{"Name":"wuauserv","Status":4}', ""
+        result = run_probe(["Get-Service", "-Name", "wuauserv"], runner=fake_runner)
+        self.assertTrue(result["ok"])
+        # Without probe_key, data is the raw parsed JSON (not normalized)
+        self.assertEqual(result["data"]["Name"], "wuauserv")
+        self.assertNotIn("name", result["data"])
 
 
 if __name__ == "__main__":

@@ -135,13 +135,27 @@ def validate_pwsh_arguments(argv: Iterable[str]) -> bool:
     return True
 
 
+def launch_script(script: str) -> Tuple[str, ...]:
+    """Build a non-interactive PowerShell process for a ready script.
+
+    Uses ``-EncodedCommand`` (base64 UTF-16LE) so the script never passes
+    through a command-line parser. Sets ``$ErrorActionPreference = 'Stop'``
+    and UTF-8 output encoding. ``run_bounded`` decodes UTF-8, including
+    Windows PowerShell 5.1 output.
+    """
+    full_script = ("$ErrorActionPreference = 'Stop'; "
+                   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+                   "$OutputEncoding = [Console]::OutputEncoding; " + script)
+    encoded = base64.b64encode(full_script.encode("utf-16-le")).decode("ascii")
+    return ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
+
+
 def launch_argv(argv: Iterable[str]) -> Optional[Tuple[str, ...]]:
     """Build a non-interactive PowerShell process for a validated cmdlet.
 
     The caller supplies a cmdlet argv, never a script. Only this fixed
     wrapper controls encoding and execution; quotes around operand values
     keep wildcards, commas and backslashes as data in the generated script.
-    ``run_bounded`` decodes UTF-8, including Windows PowerShell 5.1 output.
     """
     arguments = tuple(argv)
     if not validate_pwsh_arguments(arguments):
@@ -149,8 +163,4 @@ def launch_argv(argv: Iterable[str]) -> Optional[Tuple[str, ...]]:
     invocation = " ".join(
         argument if index == 0 or argument.startswith('-') else "'" + argument + "'"
         for index, argument in enumerate(arguments))
-    script = ("$ErrorActionPreference = 'Stop'; "
-              "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-              "$OutputEncoding = [Console]::OutputEncoding; " + invocation)
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    return ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
+    return launch_script(invocation)

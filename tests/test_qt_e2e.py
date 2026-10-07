@@ -213,6 +213,8 @@ class TestWindowsFoundationE2E(TestQtE2EBase):
 
     def test_pwsh_output_normalization(self):
         """PowerShell output normalization should work end-to-end."""
+        import base64
+
         from src.platform.pwsh_output import (
             wrap_cmdlet_json,
             parse_json_output,
@@ -222,7 +224,8 @@ class TestWindowsFoundationE2E(TestQtE2EBase):
         # Wrap a cmdlet
         argv = wrap_cmdlet_json(["Get-Service", "-Name", "wuauserv"])
         self.assertEqual(argv[0], "powershell")
-        self.assertIn("Get-Service", argv[5])
+        script = base64.b64decode(argv[5]).decode("utf-16-le")
+        self.assertIn("Get-Service", script)
 
         # Parse JSON output
         json_output = '{"Name":"wuauserv","Status":4,"DisplayName":"Windows Update","StartType":3}'
