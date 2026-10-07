@@ -80,11 +80,35 @@ _WINDOWS_ROOT_RE = re.compile(r"^[A-Za-z]:[\\/]|^\\\\")
 _WIN_ENV_RE = re.compile(r"%(\w+)%")
 
 
+class _UnknownEnvVar(Exception):
+    """A %VAR% reference has no definition; the decision must fail closed."""
+
+
 def _expand_windows_env(path: str) -> str:
-    """Expand %VAR% references from os.environ on any host OS."""
+    """Expand %VAR% references from os.environ on any host OS.
+
+    An unknown variable raises: substituting an empty string could turn the
+    path into a different, possibly allowed one. Callers fail closed.
+    """
     def replace(match):
-        return os.environ.get(match.group(1), "")
+        name = match.group(1)
+        value = os.environ.get(name)
+        if value is None:
+            raise _UnknownEnvVar(name)
+        return value
     return _WIN_ENV_RE.sub(replace, path)
+
+
+def _windows_relative_to(path: PureWindowsPath, base: PureWindowsPath) -> bool:
+    """Case-insensitive containment test that works on Python 3.8.
+
+    Windows paths are case-insensitive; PurePath.is_relative_to is 3.9+.
+    """
+    path_parts = [part.lower() for part in path.parts]
+    base_parts = [part.lower() for part in base.parts]
+    if len(path_parts) < len(base_parts):
+        return False
+    return path_parts[:len(base_parts)] == base_parts
 
 
 def _is_windows_style(path: str) -> bool:
@@ -162,8 +186,8 @@ def is_sensitive_windows_path(path: str) -> bool:
                     return True
 
         return False
-    except Exception:
-        return True  # Fail closed
+    except _UnknownEnvVar:
+        return True  # Fail closed: the real target is unknowable
 
 
 def is_allowed_windows_path(path: str, allowed_dirs: Optional[List[str]] = None) -> bool:
@@ -182,27 +206,29 @@ def is_allowed_windows_path(path: str, allowed_dirs: Optional[List[str]] = None)
     """
     try:
         normalized = _normalize_pure(path)
-
+    except _UnknownEnvVar:
+        return False  # Fail closed: the real target is unknowable
+    try:
         # Block sensitive paths
         if is_sensitive_windows_path(str(normalized)):
             return False
 
         # Check if inside home
         home = PureWindowsPath(str(get_user_home()))
-        if normalized.is_relative_to(home):
+        if _windows_relative_to(normalized, home):
             return True
 
         # Check allowed directories
         for allowed_dir in allowed_dirs or ():
             try:
                 allowed = _normalize_pure(allowed_dir)
-                if normalized.is_relative_to(allowed):
-                    return True
-            except (ValueError, TypeError):
+            except _UnknownEnvVar:
                 continue
+            if _windows_relative_to(normalized, allowed):
+                return True
 
         return False
-    except Exception:
+    except _UnknownEnvVar:
         return False
 
 
@@ -213,12 +239,12 @@ def is_privileged_windows_path(path: str) -> bool:
     """
     try:
         normalized = _normalize_pure(path)
-        home = PureWindowsPath(str(get_user_home()))
-        if normalized.is_relative_to(home):
-            return False  # Inside home, no elevation needed
-        return True  # Outside home, may need elevation
-    except Exception:
-        return True
+    except _UnknownEnvVar:
+        return True  # Fail closed: unknown target needs elevation
+    home = PureWindowsPath(str(get_user_home()))
+    if _windows_relative_to(normalized, home):
+        return False  # Inside home, no elevation needed
+    return True  # Outside home, may need elevation
 
 
 def file_digest(path: str) -> Optional[str]:

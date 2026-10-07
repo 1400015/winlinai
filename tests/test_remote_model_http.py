@@ -121,17 +121,17 @@ class TestRemoteModelHTTP(unittest.TestCase):
         self.mode = 'headers'
         began = time.monotonic()
         with self.assertRaises(ModelDiscoveryError):
-            self.discover(timeout=2)
+            self.discover(timeout=0.5)
         self.assertTrue(self.started.is_set())
-        self.assertLess(time.monotonic() - began, 4)
+        self.assertLess(time.monotonic() - began, 1.4)
 
     def test_partial_body_cannot_extend_deadline(self):
         self.mode = 'body'
         began = time.monotonic()
         with self.assertRaises(ModelDiscoveryError):
-            self.discover(timeout=2)
+            self.discover(timeout=0.5)
         self.assertTrue(self.started.is_set())
-        self.assertLess(time.monotonic() - began, 4)
+        self.assertLess(time.monotonic() - began, 1.4)
 
     def test_trickled_headers_and_bodies_cannot_reset_total_deadline(self):
         for mode in ('drip_headers', 'plain_drip', 'gzip_drip', 'gzip_header'):
@@ -140,9 +140,9 @@ class TestRemoteModelHTTP(unittest.TestCase):
                 self.started.clear()
                 began = time.monotonic()
                 with self.assertRaises(ModelDiscoveryError):
-                    self.discover(timeout=2)
+                    self.discover(timeout=0.5)
                 self.assertTrue(self.started.is_set())
-                self.assertLess(time.monotonic() - began, 4)
+                self.assertLess(time.monotonic() - began, 1.4)
 
     def test_worker_deadline_survives_absent_frontend_supervision(self):
         self.mode = 'drip_headers'
@@ -150,7 +150,7 @@ class TestRemoteModelHTTP(unittest.TestCase):
         command_fd = None
         process = None
         try:
-            arguments = ('groq', self.endpoint, {'Accept': 'application/json'}, 2,
+            arguments = ('groq', self.endpoint, {'Accept': 'application/json'}, 0.5,
                          remote_models.requests.Session, time.monotonic)
             with patch.dict(os.environ, {'NO_PROXY': '127.0.0.1', 'no_proxy': '127.0.0.1'}):
                 process, command_fd, command = remote_models._start_worker(read_fd, write_fd, arguments)
@@ -160,7 +160,7 @@ class TestRemoteModelHTTP(unittest.TestCase):
             os.write(command_fd, command)
             os.close(command_fd)
             command_fd = None
-            process.wait(timeout=5)
+            process.wait(timeout=2)
             self.assertTrue(self.started.is_set())
             self.assertEqual(process.returncode, -signal.SIGALRM)
         finally:

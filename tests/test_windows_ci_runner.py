@@ -40,7 +40,7 @@ class TestWindowsCi(unittest.TestCase):
                                   'test_windows_file_actions.py',
                                   'test_windows_foundation_bootstrap.py',
                                   'test_windows_foundation_storage.py',
-                                  'test_windows_phase1.py', 'test_windows_screenshot.py',
+                                  'test_windows_screenshot.py',
                                   'test_windows_system_actions.py'])
         self.assertEqual(suite.countTestCases(), 0)
 

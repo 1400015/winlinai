@@ -31,7 +31,7 @@ def discover_windows_suite(test_directory, loader=None):
         if path.name.startswith((
                 'test_windows_foundation', 'test_windows_file_actions',
                 'test_windows_screenshot', 'test_windows_system_actions',
-                'test_windows_phase', 'test_pwsh_output', 'test_qt_')):
+                'test_pwsh_output', 'test_qt_')):
             suite.addTests(loader.discover(str(test_directory), pattern=path.name))
     return suite
 

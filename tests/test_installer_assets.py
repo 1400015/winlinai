@@ -12,6 +12,7 @@ import functools
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path, PureWindowsPath
 
@@ -26,11 +27,17 @@ def _resolve_repo_path(relative: str) -> Path:
 
 
 def requires_powershell(test):
-    """Skip when no PowerShell parser is available (non-Windows runners)."""
+    """Skip when no PowerShell parser is available (non-Windows runners).
+
+    On Windows the parser is part of the platform: a missing binary there is
+    a real failure, not a skip.
+    """
     @functools.wraps(test)
     def wrapper(self):
         executable = shutil.which("pwsh") or shutil.which("powershell")
         if executable is None:
+            if sys.platform == "win32":
+                self.fail("PowerShell parser not found on Windows")
             self.skipTest("PowerShell not available on this host")
         return test(self, executable)
     return wrapper

@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from src.windows_file_actions import (
@@ -41,9 +42,24 @@ class TestNormalizeWindowsPath(unittest.TestCase):
         self.assertNotIn("~", str(result))
 
     def test_expands_env_vars(self):
-        # %USERPROFILE% or $USERPROFILE should be expanded
-        result = normalize_windows_path("%USERPROFILE%\\test.txt")
-        self.assertNotIn("%", str(result))
+        # %USERPROFILE% expands to the variable defined in this test
+        with unittest.mock.patch.dict(os.environ, {"USERPROFILE": "C:\\Users\\test"}):
+            result = normalize_windows_path("%USERPROFILE%\\test.txt")
+        self.assertEqual(str(result), "C:\\Users\\test\\test.txt")
+
+    def test_unknown_env_var_keeps_token_and_fails_closed(self):
+        # An undefined %VAR% must not be silently emptied into another path
+        env = {k: v for k, v in os.environ.items() if k != "WINLINAI_MISSING_VAR"}
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            self.assertTrue(is_sensitive_windows_path(r"%WINLINAI_MISSING_VAR%\\test.txt"))
+            self.assertFalse(is_allowed_windows_path(r"%WINLINAI_MISSING_VAR%\\test.txt"))
+
+    def test_home_containment_is_case_insensitive(self):
+        home = str(get_user_home())
+        variant = "".join(
+            c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(home))
+        self.assertTrue(is_allowed_windows_path(os.path.join(variant, "Documents", "f.txt")))
+        self.assertFalse(is_privileged_windows_path(os.path.join(variant, "docs.txt")))
 
     def test_normalizes_slashes(self):
         result = normalize_windows_path("C:/Users/test/file.txt")
