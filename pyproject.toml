@@ -110,6 +110,7 @@ files = [
     # Windows-specific modules
     "src/windows_screenshot.py",
     "src/windows_system_actions.py",
+    "src/windows_file_actions.py",
 ]
 # Read the types of imported modules without gating their existing diagnostics.
 # Only the explicitly selected sources above belong to this increment.
