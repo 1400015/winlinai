@@ -50,7 +50,7 @@ linux-ai-assistant = "src.app:main"
 winlinai = "src.app:main"
 
 [tool.setuptools.packages.find]
-include = ["src", "src.*", "src.providers", "src.providers.*", "plugins", "plugins.*"]
+include = ["src", "src.*", "plugins", "plugins.*"]
 namespaces = false
 
 [tool.setuptools.package-data]

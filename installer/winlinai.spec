@@ -46,12 +46,6 @@ hiddenimports = [
     'src.windows_file_actions',
     'src.qt_file_dialogs',
     'src.platform.pwsh_output',
-    'src.providers',
-    'src.providers.base',
-    'src.providers.openai_compatible',
-    'src.providers.google',
-    'src.providers.anthropic',
-    'src.providers.cohere',
 ]
 
 a = Analysis(
