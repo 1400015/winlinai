@@ -1133,7 +1133,8 @@ class ConfigManager:
         published = False
         with self._lock:
             try:
-                with windows_files.file_lock(str(self._dotenv_path) + '.lock'), windows_files.guarded_path(self._dotenv_path):
+                with windows_files.file_lock(str(self._dotenv_path) + '.lock'), \
+                        windows_files.guarded_path(self._dotenv_path, writable_parent=True):
                     if not self.can_remove_empty_api_key_override(provider):
                         raise ValueError("The empty override could not be removed safely.")
                     contents, identity = _read_owned_dotenv(self._dotenv_path)
