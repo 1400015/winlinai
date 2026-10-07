@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -66,23 +67,26 @@ def windows_backends():
     except ImportError:
         return None
 
+    # Use Any to avoid attr-defined errors on winreg (Windows-only module)
+    winreg_any = cast(Any, winreg)
+
     def read_value(key, name):
         try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0,
-                                winreg.KEY_READ) as handle:
-                value, _ = winreg.QueryValueEx(handle, name)
+            with winreg_any.OpenKey(winreg_any.HKEY_CURRENT_USER, key, 0,
+                                   winreg_any.KEY_READ) as handle:
+                value, _ = winreg_any.QueryValueEx(handle, name)
                 return value
         except OSError:
             return None
 
     def write_value(key, name, value):
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as handle:
-            winreg.SetValueEx(handle, name, 0, winreg.REG_SZ, value)
+        with winreg_any.CreateKey(winreg_any.HKEY_CURRENT_USER, key) as handle:
+            winreg_any.SetValueEx(handle, name, 0, winreg_any.REG_SZ, value)
 
     def delete_value(key, name):
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0,
-                            winreg.KEY_SET_VALUE) as handle:
-            winreg.DeleteValue(handle, name)
+        with winreg_any.OpenKey(winreg_any.HKEY_CURRENT_USER, key, 0,
+                                winreg_any.KEY_SET_VALUE) as handle:
+            winreg_any.DeleteValue(handle, name)
 
     return read_value, write_value, delete_value
 

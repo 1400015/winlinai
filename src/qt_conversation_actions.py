@@ -142,8 +142,10 @@ def summarize_messages(messages: List[Dict], max_chars: int = 500) -> str:
 # Qt wrappers
 # ---------------------------------------------------------------------------
 
+from typing import Any, Type
+
 if QT_AVAILABLE:
-    _BaseMenu = QtWidgets.QMenu
+    _BaseMenu: Type[Any] = QtWidgets.QMenu
 else:
     _BaseMenu = object
 

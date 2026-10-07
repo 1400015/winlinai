@@ -92,16 +92,32 @@ ignore = [
 python_version = "3.12"
 platform = "linux"
 files = [
+    # Core modules (initial gate)
     "src/render_core.py",
     "src/build_info.py",
     "src/system_context.py",
     "src/credential_store.py",
+    # Windows foundation (phase 1)
+    "src/windows_autostart.py",
+    "src/platform/tray_config.py",
+    "src/platform/pwsh_output.py",
+    # Qt track (phases 2-4)
+    "src/qt_theme.py",
+    "src/qt_conversation_actions.py",
+    # Windows-specific modules
+    "src/windows_screenshot.py",
+    "src/windows_system_actions.py",
 ]
 # Read the types of imported modules without gating their existing diagnostics.
-# Only the explicitly selected sources above belong to this first increment.
+# Only the explicitly selected sources above belong to this increment.
 follow_imports = "silent"
 check_untyped_defs = true
 no_implicit_optional = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 show_error_codes = true
+
+# Ignore missing imports for optional/platform-specific dependencies
+[[tool.mypy.overrides]]
+module = ["PySide6.*", "winreg", "gi.*", "PIL.*"]
+ignore_missing_imports = true
