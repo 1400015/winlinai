@@ -44,9 +44,20 @@ class TestWindowsStorageRouting(unittest.TestCase):
             return tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=str(parent))
 
         def publish(source, target):
-            os.replace(source, target)
+            if os.name == 'nt':
+                # Match the real backend: a rename by handle succeeds while
+                # readers hold the target with FILE_SHARE_DELETE.
+                import win32file
+                win32file.MoveFileEx(source, target,
+                                     _win32con_routing.MOVEFILE_REPLACE_EXISTING)
+            else:
+                os.replace(source, target)
             if publication_error is not None:
                 raise windows_files.FilePublicationCommittedError(publication_error)
+
+        _win32con_routing = None
+        if os.name == 'nt':
+            import win32con as _win32con_routing
 
         def shared_open(path):
             # The real Windows backend opens read handles with
@@ -301,6 +312,31 @@ class TestNativeWindowsStorage(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'changed'):
             windows_files.publish_temporary(name, self.path, expected_identity=identity)
         self.assertEqual(self.path.read_text(), 'EXTERNAL=value\n')
+
+    def test_owner_rights_ace_is_accepted_but_strangers_stay_refused(self):
+        import ntsecuritycon
+        import win32con
+        import win32security
+        self.path.write_text('KEY=\n', encoding='utf-8')
+        descriptor = win32security.GetNamedSecurityInfo(str(self.path), win32security.SE_FILE_OBJECT,
+                                                        win32security.DACL_SECURITY_INFORMATION)
+        acl = descriptor.GetSecurityDescriptorDacl()
+        owner_rights = win32security.ConvertStringSidToSid('S-1-3-4')
+        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION_DS,
+                                  win32con.OBJECT_INHERIT_ACE | win32con.CONTAINER_INHERIT_ACE,
+                                  ntsecuritycon.FILE_ALL_ACCESS, owner_rights)
+        win32security.SetNamedSecurityInfo(str(self.path), win32security.SE_FILE_OBJECT,
+                                           win32security.DACL_SECURITY_INFORMATION, None, None, acl, None)
+        # The inherited OWNER RIGHTS ACE must not block private storage.
+        windows_files.read_owned_text(self.path, 128)
+        # A stranger ACE must still be refused.
+        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION_DS, 0,
+                                   win32con.GENERIC_WRITE,
+                                   win32security.CreateWellKnownSid(win32security.WinWorldSid, None))
+        win32security.SetNamedSecurityInfo(str(self.path), win32security.SE_FILE_OBJECT,
+                                           win32security.DACL_SECURITY_INFORMATION, None, None, acl, None)
+        with self.assertRaises(ValueError):
+            windows_files.read_owned_text(self.path, 128)
 
     def test_owned_text_refuses_acl_with_other_principal_write_access(self):
         import win32con

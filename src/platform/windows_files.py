@@ -189,6 +189,13 @@ def _check_owned(handle, private=False):
     descriptor = _call(security.GetSecurityInfo, handle, security.SE_FILE_OBJECT,
                        security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION)
     trusted = _trusted_sids()
+    # S-1-3-4 (OWNER RIGHTS) constrains what the owner may do; it never grants
+    # access to another principal, and the actual owner is verified separately
+    # by GetSecurityDescriptorOwner above. CI runners inherit such an ACE
+    # (type=ACCESS_ALLOWED, flags=OBJECT_INHERIT|CONTAINER_INHERIT,
+    # mask=FILE_ALL_ACCESS) from their %TEMP% directories. A native test now
+    # pins that strangers (S-1-1-0) keep being refused.
+    owner_rights = security.ConvertStringSidToSid("S-1-3-4")
     if descriptor.GetSecurityDescriptorOwner() not in _owner_sids():
         raise ValueError("The storage object must be owned by the current user")
     acl = descriptor.GetSecurityDescriptorDacl()
@@ -208,7 +215,7 @@ def _check_owned(handle, private=False):
         if kind != security.ACCESS_ALLOWED_ACE_TYPE:
             raise ValueError("An unsupported storage ACL cannot be verified")
         mask, sid = ace[1], ace[2]
-        if sid not in trusted and (private or mask & unsafe):
+        if sid not in trusted and sid != owner_rights and (private or mask & unsafe):
             # Diagnostics only: identify the rejected ACE (SID, type, flags,
             # mask) without logging file contents or credentials. The policy
             # itself is unchanged until a native test shows the actual ACE.
