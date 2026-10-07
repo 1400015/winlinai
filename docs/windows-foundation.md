@@ -36,16 +36,20 @@ arrancar a interface Qt.
 
 ## Âmbito da etapa
 
-| Capacidade | Estado nesta etapa |
-| --- | --- |
-| Arranque Qt sem GTK | Contrato explícito, incluindo falhas de inicialização |
-| Configuração e histórico | Backend Windows nativo, testes de proteção e persistência |
-| Execução limitada | Backend Windows para prazos, limites de saída e processos descendentes |
-| Distribuição Python | Wheel completo e ensaio fora do checkout |
-| Conversa Qt | Assistência offline e histórico; paridade de IA local/remota por completar |
-| Diagnósticos PowerShell/WSL | Fronteira do host e catálogo de sondas corrigidos; normalização dos resultados implementada (`src/platform/pwsh_output.py`) |
-| Tray e autostart | Corrigidos: Expert Mode, Statistics, ícone SVG, tooltip com plataforma, checkbox de autostart em Settings |
-| Instalador Windows | Instalação manual por ambiente virtual nesta etapa |
+Estado: **I** = implementado, **INT** = integrado num caller real, **CI** = testado em CI Windows, **AR** = aceite em máquina real (pendente).
+
+| Capacidade | Estado | Notas |
+| --- | --- | --- |
+| Arranque Qt sem GTK | I/INT/CI | Contrato explícito, incluindo falhas de inicialização |
+| Configuração e histórico | I/INT/CI | Backend Windows nativo, testes de proteção e persistência |
+| Execução limitada | I/INT/CI | Backend Windows para prazos, limites de saída e processos descendentes |
+| Distribuição Python | I/CI | Wheel completo e ensaio fora do checkout |
+| Conversa Qt (offline + IA) | I/INT/CI | Assistência offline, histórico, provider `ai_client` com fallback, cancelamento via `cancel_event` |
+| Diagnósticos PowerShell/WSL | I/INT/CI | Fronteira do host e catálogo de sondas; normalização em `src/platform/pwsh_output.py`; `-EncodedCommand` via `launch_script` |
+| Tray e autostart | I/INT/CI | Expert Mode, Statistics, ícone SVG, tooltip com plataforma, checkbox de autostart em Settings |
+| Updater | I/INT/CI | Verificação de updates em Settings e arranque; sem auto-download |
+| Escrita de ficheiros (file blocks) | I/INT/CI | Fluxo expert-mode: parse, preview, confirmação, escrita atómica com backup |
+| Instalador Windows | I/CI | Scripts PowerShell corrigidos e validados (`tests/test_installer_assets.py`); `.ico` gerado; empacotamento .msi/.exe pendente |
 
 Os comandos continuam sujeitos à política local. O texto de um modelo ou de
 uma documentação não autoriza execução. As operações Linux com privilégios,
@@ -154,12 +158,37 @@ Windows, versão do Python e commit utilizado:
 - `tests/test_qt_phase4c.py`: +15 testes (expert mode, platform label, autostart high-level, statistics rows, tray actions)
 - `tests/test_pwsh_output.py`: 30 testes para normalização de output PowerShell
 
+## Melhorias desta iteração (2026-10-07, segunda passagem)
+
+Após uma autoavaliação honesta do código, foram executadas quatro fases de melhoria:
+
+### Fase A — Estabilização
+- `installer/build-installer.ps1`: corrigido typo (`'n'` solto) que quebrava o script
+- `assets/io.github.linux_ai_assistant.ico`: gerado (Pillow, multi-size) — estava referenciado mas não existia
+- `installer/winlinai.spec`: removidas opções PyInstaller 6 removidas (`win_no_prefer_redirects`, `win_private_assemblies`)
+- `src/updater.py`: corrigida precedência `and`/`or` na deteção de assets Windows via nova função pura `_is_windows_installer_asset()`
+- `tests/test_installer_assets.py`: 14 testes (referências .iss, validade .spec, sintaxe PowerShell via PS parser, presença de assets)
+
+### Fase B — Arquitetura (extração = migração)
+- `src/theme_utils.py` integrado em `src/main_window.py` (-185 linhas); `build_gtk_css()` movido para lá; teste dourado `tests/test_theme_golden.py` (CSS byte-identical para 4 temas)
+- `src/main_window_themes.py` integrado em `MainWindow` (-92 linhas); cópias locais e regexes removidos
+- `src/providers/` (spike não integrado) removido; documentado em `docs/spikes/providers.md` com caminho de continuação (pilot local_llm)
+- Fluxo de escrita de ficheiros (file blocks) ligado ao chat Qt: `_offer_file_blocks`, `preview_diff`, `confirm_file_write_qt`, escrita atómica + backup
+- Updater ligado: secção "Updates" em `QtSettingsDialog`, verificação no arranque (`_maybe_check_updates`), notificação via mensagem de sistema
+
+### Fase C — Segurança e concorrência
+- `src/windows_system_actions.py`: winget deixa de usar `subprocess.run` diretamente; passa por `run_bounded` com allowlist (`list`/`search`) e validação de query
+- `src/qt_worker.py` (novo): Worker genérico com sinais tipados (`finished`/`failed`); substitui `QMetaObject.invokeMethod` por sinais
+- `src/qt_chat.py`: `_ProviderWorker` + `cancel_event` (threading.Event); botão "Stop" durante chamadas; `provider_reply_text` mapeia `AIRequestCancelled` → `"cancelled"`
+- `src/platform/shell_pwsh.py`: nova `launch_script()` extrai encoding `-EncodedCommand`; `pwsh_output.wrap_cmdlet_json` reutiliza-a; `run_probe` aceita `probe_key` e normaliza
+- `src/qt_dialogs.py`: `QtCore.Qt.Checked` em vez de número mágico `2`
+
 ## Ainda falta
 
-- **Aceitação em máquina Windows real**: validar tray, autostart e ícones com sessão gráfica
-- **Instalador Windows**: empacotamento .msi/.exe (Inno Setup/NSIS)
-- **Consolidação da gestão de conversas Qt**: paridade completa com GTK
-- **Integração de providers de IA**: `ai_client` no chat Qt
-- **Paridade com ações GTK**: `conversation_actions`, `file_actions`, `package_actions`, `service_actions`
-- **Captura de ecrã**: equivalente Windows ao portal Wayland
-- **Temas visuais**: carregar `themes/*.json` como stylesheets Qt
+- **Aceitação em máquina Windows real**: validar tray, autostart, ícones e updater com sessão gráfica (CI cobre construção e comportamento de widgets, não interação desktop)
+- **Empacotamento .msi/.exe**: Inno Setup/NSIS (scripts e assets já validados por testes)
+- **Consolidação da gestão de conversas Qt**: paridade completa com GTK (sessões, export, procura)
+- **Paridade com ações GTK**: `conversation_actions` e `service_actions` (file blocks já integrados; winget via `windows_system_actions`)
+- **Captura de ecrã**: equivalente Windows ao portal Wayland está implementado (`src/windows_screenshot.py`); falta ensaio em máquina real
+- **Temas visuais Qt**: carregar `themes/*.json` como stylesheets Qt está implementado (`src/qt_theme.py`); falta ensaio visual em máquina real
+- **Provider local (local_llm)**: paridade de IA local completa (providers remotos já integrados)
