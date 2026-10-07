@@ -92,6 +92,21 @@ def _safe_url(url: str) -> bool:
         return False
 
 
+def _is_windows_installer_asset(name: str) -> bool:
+    """True if the asset name looks like a Windows installer for WinLinAI.
+
+    Pure function so the matching policy is fully testable.
+    Accepts .exe files whose name mentions windows, winlinai or setup.
+    Rejects everything else (deb, rpm, dmg, random exes).
+    """
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    if not lowered.endswith(".exe"):
+        return False
+    return any(keyword in lowered for keyword in ("windows", "winlinai", "setup"))
+
+
 def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Optional[Dict]:
     """Check GitHub for a newer release.
 
@@ -143,13 +158,12 @@ def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Optional[Dict]:
             name = asset.get("name", "")
             url = asset.get("browser_download_url", "")
             size = asset.get("size", 0)
-            if name.endswith(".exe") and "windows" in name.lower() or name.endswith("-Setup.exe"):
-                if _safe_url(url):
-                    assets.append({
-                        "name": name,
-                        "url": url,
-                        "size": size,
-                    })
+            if _is_windows_installer_asset(name) and _safe_url(url):
+                assets.append({
+                    "name": name,
+                    "url": url,
+                    "size": size,
+                })
 
         return {
             "version": latest_version,

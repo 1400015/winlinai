@@ -8,6 +8,7 @@ from src.updater import (
     parse_version,
     is_newer_version,
     _safe_url,
+    _is_windows_installer_asset,
     check_for_updates,
     verify_checksum,
     get_update_downloads_dir,
@@ -82,6 +83,36 @@ class TestSafeUrl(unittest.TestCase):
     def test_invalid_url(self):
         self.assertFalse(_safe_url("not a url"))
         self.assertFalse(_safe_url(""))
+
+
+class TestIsWindowsInstallerAsset(unittest.TestCase):
+    def test_setup_exe_accepted(self):
+        self.assertTrue(_is_windows_installer_asset("WinLinAI-1.5.0-Setup.exe"))
+
+    def test_windows_exe_accepted(self):
+        self.assertTrue(_is_windows_installer_asset("WinLinAI-1.5.0-windows.exe"))
+
+    def test_winlinai_exe_accepted(self):
+        self.assertTrue(_is_windows_installer_asset("winlinai-setup.exe"))
+
+    def test_case_insensitive(self):
+        self.assertTrue(_is_windows_installer_asset("WINLINAI-SETUP.EXE"))
+
+    def test_non_exe_rejected(self):
+        self.assertFalse(_is_windows_installer_asset("WinLinAI-1.5.0-Setup.deb"))
+        self.assertFalse(_is_windows_installer_asset("WinLinAI-1.5.0-Setup.dmg"))
+        self.assertFalse(_is_windows_installer_asset("winlinai-setup.zip"))
+
+    def test_random_exe_rejected(self):
+        self.assertFalse(_is_windows_installer_asset("random-tool.exe"))
+        self.assertFalse(_is_windows_installer_asset("malware.exe"))
+
+    def test_non_string_rejected(self):
+        self.assertFalse(_is_windows_installer_asset(None))
+        self.assertFalse(_is_windows_installer_asset(123))
+
+    def test_empty_rejected(self):
+        self.assertFalse(_is_windows_installer_asset(""))
 
 
 class TestCheckForUpdates(unittest.TestCase):

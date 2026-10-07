@@ -97,7 +97,7 @@ Write-Host "`n=== Step 3: Building installer with Inno Setup ===" -ForegroundCol
 $iscc = Get-Command iscc -ErrorAction SilentlyContinue
 if (-not $iscc) {
     # Try common Inno Setup install locations
-n    $innoPaths = @(
+    $innoPaths = @(
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
         "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
     )
