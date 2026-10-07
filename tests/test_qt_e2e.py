@@ -687,6 +687,53 @@ class TestQtSessionIsolation(TestQtE2EBase):
         stored = [m for m in self._messages(store, session_a) if m["role"] == "assistant"]
         self.assertEqual(stored, [])
 
+    def test_history_dialog_new_refused_while_request_in_flight(self):
+        """New must not create a session while a request is pending.
+
+        The dialog is wired exactly like QtShell.open_history_dialog: the
+        shell (parent) owns the chat, and the worker thread is alive. The
+        pending state comes from a real send, not from an injected
+        _request_session_id.
+        """
+        from src.qt_app import QtShell
+        from src.qt_dialogs import QtHistoryDialog
+
+        history_path = Path(self.temp_dir.name) / "history.json"
+        shell = QtShell(self.config, "windows", history_path=str(history_path))
+        self.addCleanup(shell.close)
+        chat = shell.chat
+        store = shell.history_store
+        self.assertIsNotNone(chat)
+        self.assertIsNotNone(store)
+        # A real pending request: patch the provider path so the worker
+        # stays alive until this test releases it.
+        release = threading.Event()
+
+        def slow_chat(messages, images=None, cancel_event=None):
+            release.wait(timeout=5)
+            return "late answer"
+
+        ai_client = Mock()
+        ai_client.chat.side_effect = slow_chat
+        chat.ai_client = ai_client
+        with patch("src.qt_chat.should_use_provider", return_value=True):
+            chat.input.setText("pending question")
+            chat._on_send()
+            self.addCleanup(release.set)
+            self.addCleanup(chat._worker_thread.join)
+            self.assertTrue(chat.request_in_flight())
+            active_before = store.active_session_id
+            sessions_before = len(store.list_sessions())
+            dialog = QtHistoryDialog(store, shell,
+                                     on_open=lambda _id: None,
+                                     on_new=lambda _id: None)
+            self.addCleanup(dialog.deleteLater)
+            # The refusal shows a modal box; keep the test non-interactive.
+            with patch("PySide6.QtWidgets.QMessageBox.information"):
+                dialog._new()
+            self.assertEqual(store.active_session_id, active_before)
+            self.assertEqual(len(store.list_sessions()), sessions_before)
+
     def test_offline_answer_follows_the_same_contract(self):
         from src.qt_chat import QtChatWidget
         from src.history_store import HistoryStore

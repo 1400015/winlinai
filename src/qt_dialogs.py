@@ -423,6 +423,10 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         return self.list_widget.currentItem()
 
     def _new(self):
+        # The guard runs before create_session: with a request in flight the
+        # store must not gain an active session the chat cannot show.
+        if self._session_change_refused():
+            return
         session = self.store.create_session(select=True)
         session_id = session.get("id") if isinstance(session, dict) else session
         if callable(self.on_new):
