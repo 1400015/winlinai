@@ -649,11 +649,12 @@ class TestQtSessionIsolation(TestQtE2EBase):
         chat._worker_thread.start()
         self.addCleanup(release.set)
         self.addCleanup(chat._worker_thread.join)
-        store.create_session(select=False)
-        other = store.list_sessions()[0]["id"]
         active = store.active_session_id
+        created = store.create_session(select=False)
+        other = created["id"]
+        self.assertNotEqual(other, active)
         chat.load_session(other)
-        self.assertNotEqual(store.active_session_id, other)
+        self.assertEqual(store.active_session_id, active)
         self.assertIn(i18n._("Wait for the pending answer before switching conversations."),
                       chat.log.toPlainText())
         chat.clear_conversation()

@@ -586,7 +586,13 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
             logger.warning("History write failed: %s", type(error).__name__)
 
     def _request_session_is_selected(self):
-        """True when the originating session is still the one being shown."""
+        """True when the originating session is still the one being shown.
+
+        Without a history store there is nothing to switch to: the request
+        belongs to the single implicit conversation being shown.
+        """
+        if self.history_store is None:
+            return True
         return (self._request_session_id is not None
                 and self._request_session_id == self._current_session_id())
 
