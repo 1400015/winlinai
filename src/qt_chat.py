@@ -560,6 +560,12 @@ class QtChatWidget(_BaseWidget):
         scrollbar = self.log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
+    @_Slot(str)
+    def append_system_message(self, text):
+        """Append a system message (thread-safe: usable via invokeMethod)."""
+        from . import i18n
+        self.append_message(i18n._("System"), text)
+
     def clear_conversation(self):
         """Clear the current conversation (new session)."""
         if self.history_store is not None:

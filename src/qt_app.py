@@ -199,6 +199,49 @@ def lock_file_path(base_dir=None):
     return os.path.join(directory, "qt-instance.lock")
 
 
+def _maybe_check_updates(config_manager, shell):
+    """Silent background update check on startup (opt-in via app.check_updates).
+
+    Never blocks startup: runs in a daemon thread, stores the result in config
+    and reports it as a system message in the chat. No auto-download.
+    """
+    import threading
+    try:
+        enabled = bool(config_manager.get("app.check_updates", True))
+    except Exception:
+        enabled = True
+    if not enabled:
+        return
+
+    def worker():
+        try:
+            from .updater import check_for_updates
+            update = check_for_updates()
+        except Exception as error:
+            logger.info("Update check skipped: %s", type(error).__name__)
+            return
+        if update is None:
+            return
+        try:
+            config_manager.set("update.available", True)
+            config_manager.set("update.version", update["version"])
+            config_manager.set("update.url", update["url"])
+        except Exception:
+            pass
+        from . import i18n
+        message = i18n._(
+            "New version available: {version} (open Settings → Updates for details)."
+        ).format(version=update["version"])
+        logger.info("Update available: %s", update["version"])
+        if shell is not None and getattr(shell, "chat", None) is not None:
+            QtCore.QMetaObject.invokeMethod(
+                shell.chat, "append_system_message",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, message))
+
+    threading.Thread(target=worker, daemon=True, name="update-check").start()
+
+
 def run(config_manager=None, argv=None):
     """Start Qt with all required backends, returning a process exit code."""
     if not QT_AVAILABLE:
@@ -240,6 +283,7 @@ def run(config_manager=None, argv=None):
             return 1
         shell = QtShell(config_manager, platform_name)
         shell.show()
+        _maybe_check_updates(config_manager, shell)
         logger.info("Starting Qt event loop (platform: %s)", platform_name)
         return app.exec()
     except Exception as error:

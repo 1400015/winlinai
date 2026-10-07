@@ -16,6 +16,15 @@ try:
 except ImportError:
     QT_AVAILABLE = False
 
+if QT_AVAILABLE:
+    _Slot = QtCore.Slot
+else:
+    def _Slot(*args, **kwargs):
+        """No-op decorator when PySide6 is unavailable."""
+        def decorator(func):
+            return func
+        return decorator
+
 
 # ---------------------------------------------------------------------------
 # Pure presentation logic (no Qt import needed to test these)
@@ -151,6 +160,9 @@ class QtSettingsDialog(_BaseDialog):
         # --- Appearance section (theme selector) ---
         self._build_appearance_section(layout, i18n)
 
+        # --- Updates section ---
+        self._build_updates_section(layout, i18n)
+
         # --- Autostart section (Windows only) ---
         self._build_autostart_section(layout, i18n)
 
@@ -190,6 +202,115 @@ class QtSettingsDialog(_BaseDialog):
         if app is not None:
             apply_theme(app, theme_name=theme_name)
         set_current_theme(self.config, theme_name)
+
+    def _build_updates_section(self, layout, i18n):
+        """Add the updates section: autostart check + manual check + status."""
+        from .updater import get_current_version
+        group = QtWidgets.QGroupBox(i18n._("Updates"), self)
+        group_layout = QtWidgets.QVBoxLayout(group)
+
+        # Checkbox: check for updates on startup
+        self.updates_check = QtWidgets.QCheckBox(
+            i18n._("Check for updates on startup"), group)
+        try:
+            enabled = bool(self.config.get("app.check_updates", True))
+        except Exception:
+            enabled = True
+        self.updates_check.setChecked(enabled)
+        self.updates_check.stateChanged.connect(self._on_updates_toggled)
+        group_layout.addWidget(self.updates_check)
+
+        # Status label
+        self.updates_status = QtWidgets.QLabel(group)
+        self._refresh_updates_status()
+        group_layout.addWidget(self.updates_status)
+
+        # Check now button
+        check_btn = QtWidgets.QPushButton(i18n._("Check now"), group)
+        check_btn.clicked.connect(self._check_updates_now)
+        group_layout.addWidget(check_btn)
+
+        # Current version footer
+        version_label = QtWidgets.QLabel(
+            i18n._("Current version: {version}").format(version=get_current_version()),
+            group)
+        version_label.setStyleSheet("color: gray;")
+        group_layout.addWidget(version_label)
+
+        layout.addWidget(group)
+
+    def _refresh_updates_status(self):
+        from . import i18n
+        try:
+            available = bool(self.config.get("update.available", False))
+            version = self.config.get("update.version", "")
+        except Exception:
+            available, version = False, ""
+        if available and version:
+            self.updates_status.setText(
+                i18n._("New version available: {version}").format(version=version))
+            self.updates_status.setStyleSheet("color: #4CAF50;")
+        else:
+            self.updates_status.setText(i18n._("You are up to date."))
+            self.updates_status.setStyleSheet("color: gray;")
+
+    def _on_updates_toggled(self, state):
+        try:
+            self.config.set("app.check_updates", state == QtCore.Qt.Checked)
+        except Exception:
+            logger.warning("Could not persist update-check preference")
+
+    def _check_updates_now(self):
+        """Run an update check in a worker thread and refresh the status."""
+        import threading
+        from . import i18n
+        from .updater import check_for_updates
+
+        self.updates_status.setText(i18n._("Checking for updates..."))
+        self.updates_status.setStyleSheet("color: gray;")
+
+        def worker():
+            update = check_for_updates()
+            QtCore.QMetaObject.invokeMethod(
+                self, "_on_update_check_done",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(object, update))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @_Slot(object)
+    def _on_update_check_done(self, update):
+        from . import i18n
+        from .updater import get_current_version
+        if update is None:
+            try:
+                self.config.set("update.available", False)
+            except Exception:
+                pass
+            self.updates_status.setText(
+                i18n._("You are up to date (version {version}).").format(
+                    version=get_current_version()))
+            self.updates_status.setStyleSheet("color: gray;")
+        else:
+            try:
+                self.config.set("update.available", True)
+                self.config.set("update.version", update["version"])
+                self.config.set("update.url", update["url"])
+            except Exception:
+                pass
+            self.updates_status.setText(
+                i18n._("New version available: {version}").format(
+                    version=update["version"]))
+            self.updates_status.setStyleSheet("color: #4CAF50;")
+            # Offer to open the releases page (no auto-download: honest + safe)
+            reply = QtWidgets.QMessageBox.question(
+                self, i18n._("Update available"),
+                i18n._("WinLinAI {version} is available. Open the releases page?").format(
+                    version=update["version"]),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            if reply == QtWidgets.QMessageBox.Yes:
+                import webbrowser
+                webbrowser.open(update["url"])
 
     def _build_autostart_section(self, layout, i18n):
         """Add the autostart checkbox (Windows only, hidden elsewhere)."""

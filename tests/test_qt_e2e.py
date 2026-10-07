@@ -9,7 +9,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 # Skip all tests if PySide6 is not available
 try:
@@ -422,6 +422,74 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
             chat._on_provider_response(reply)
         dialog.assert_not_called()
         self.assertIn("not allowed", chat.log.toPlainText())
+
+
+class TestQtUpdatesE2E(TestQtE2EBase):
+    """E2E: Settings has an Updates section; startup check respects config."""
+
+    def test_settings_dialog_has_updates_section(self):
+        from src.qt_dialogs import QtSettingsDialog
+        dialog = QtSettingsDialog(self.config)
+        self.addCleanup(dialog.close)
+        self.assertTrue(hasattr(dialog, "updates_check"))
+        self.assertTrue(hasattr(dialog, "updates_status"))
+        self.assertIsNotNone(dialog.updates_check)
+        self.assertIsNotNone(dialog.updates_status)
+
+    def test_maybe_check_updates_respects_config_disabled(self):
+        from src.qt_app import _maybe_check_updates
+        config = Mock()
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "app.check_updates": False,
+        }.get(key, default))
+        config.set = Mock()
+        with patch("src.qt_app.threading.Thread") as thread_cls:
+            _maybe_check_updates(config, shell=None)
+        thread_cls.assert_not_called()
+        config.set.assert_not_called()
+
+    def test_maybe_check_updates_stores_available_update(self):
+        from src.qt_app import _maybe_check_updates
+
+        class SyncThread:
+            """Runs the target synchronously so the test is deterministic."""
+            def __init__(self, target=None, daemon=None, name=None):
+                self._target = target
+            def start(self):
+                if self._target:
+                    self._target()
+
+        config = Mock()
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "app.check_updates": True,
+        }.get(key, default))
+        config.set = Mock()
+        fake_update = {"version": "9.9.9", "url": "https://github.com/1400015/winlinai/releases"}
+        with patch("src.qt_app.threading.Thread", SyncThread):
+            with patch("src.updater.check_for_updates", return_value=fake_update):
+                _maybe_check_updates(config, shell=None)
+        config.set.assert_any_call("update.available", True)
+        config.set.assert_any_call("update.version", "9.9.9")
+
+    def test_maybe_check_updates_quiet_when_none(self):
+        from src.qt_app import _maybe_check_updates
+
+        class SyncThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self._target = target
+            def start(self):
+                if self._target:
+                    self._target()
+
+        config = Mock()
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "app.check_updates": True,
+        }.get(key, default))
+        config.set = Mock()
+        with patch("src.qt_app.threading.Thread", SyncThread):
+            with patch("src.updater.check_for_updates", return_value=None):
+                _maybe_check_updates(config, shell=None)
+        config.set.assert_not_called()
 
 
 if __name__ == "__main__":
