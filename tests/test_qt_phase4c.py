@@ -262,8 +262,28 @@ class TestQtTrayConstruction(unittest.TestCase):
         config = Mock()
         config.get = Mock(return_value=False)
         tray = QtTrayIcon(config, shell)
-        actions = [a.text() for a in tray.menu.actions()]
-        self.assertIn("Statistics", actions)
+        self.assertIsNotNone(tray.stats_action)
+        tray.deleteLater()
+
+    def test_tray_menu_actions_are_named_attributes(self):
+        """All menu actions are stored as named attributes (i18n-independent)."""
+        import src.qt_tray as qt_tray
+        if not qt_tray.QT_AVAILABLE:
+            self.skipTest("PySide6 unavailable in this environment")
+        from PySide6 import QtWidgets, QtGui
+        _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        from src.qt_tray import QtTrayIcon
+        shell = Mock()
+        shell.platform_name = "windows"
+        shell.windowIcon.return_value = QtGui.QIcon()
+        shell.toggle_visibility = Mock()
+        config = Mock()
+        config.get = Mock(return_value=False)
+        tray = QtTrayIcon(config, shell)
+        for attr in ("toggle_action", "expert_action", "settings_action",
+                     "history_action", "stats_action", "quit_action"):
+            self.assertTrue(hasattr(tray, attr), "missing attribute: " + attr)
+            self.assertIsNotNone(getattr(tray, attr))
         tray.deleteLater()
 
     def test_update_expert_mode_syncs_checkbox(self):

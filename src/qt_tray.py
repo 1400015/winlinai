@@ -151,22 +151,22 @@ class QtTrayIcon(_BaseTray):
         self.menu.addSeparator()
 
         # Settings
-        settings_action = self.menu.addAction(i18n._("Settings"))
-        settings_action.triggered.connect(self.show_settings)
+        self.settings_action = self.menu.addAction(i18n._("Settings"))
+        self.settings_action.triggered.connect(self.show_settings)
 
         # Conversation History
-        history_action = self.menu.addAction(i18n._("Conversation History"))
-        history_action.triggered.connect(self.show_history)
+        self.history_action = self.menu.addAction(i18n._("Conversation History"))
+        self.history_action.triggered.connect(self.show_history)
 
         # Statistics (parity with GTK tray)
-        stats_action = self.menu.addAction(i18n._("Statistics"))
-        stats_action.triggered.connect(self.show_statistics)
+        self.stats_action = self.menu.addAction(i18n._("Statistics"))
+        self.stats_action.triggered.connect(self.show_statistics)
 
         self.menu.addSeparator()
 
         # Quit
-        quit_action = self.menu.addAction(i18n._("Quit"))
-        quit_action.triggered.connect(self.quit)
+        self.quit_action = self.menu.addAction(i18n._("Quit"))
+        self.quit_action.triggered.connect(self.quit)
 
         self.setContextMenu(self.menu)
 

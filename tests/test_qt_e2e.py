@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from src import i18n
+
 # Skip all tests if PySide6 is not available
 try:
     from PySide6 import QtWidgets
@@ -79,10 +81,10 @@ class TestQtShellE2E(TestQtE2EBase):
 
         # Verify message was added to log
         log_text = chat.log.toPlainText()
-        self.assertIn("User", log_text)
+        self.assertIn(i18n._("User"), log_text)
         self.assertIn("hello", log_text)
         # Should have an AI response (offline assistant)
-        self.assertIn("AI", log_text)
+        self.assertIn(i18n._("AI"), log_text)
 
     def test_history_persistence(self):
         """Messages should persist to history file."""
@@ -321,8 +323,8 @@ class TestQtChatE2E(TestQtE2EBase):
 
         # Should have user and AI messages
         log_text = chat.log.toPlainText()
-        self.assertIn("User", log_text)
-        self.assertIn("AI", log_text)
+        self.assertIn(i18n._("User"), log_text)
+        self.assertIn(i18n._("AI"), log_text)
 
 
 class TestQtFileBlocksE2E(TestQtE2EBase):
@@ -360,7 +362,7 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
         self.assertTrue(target.exists())
         self.assertEqual(target.read_text(encoding="utf-8"), "print('hi')\n")
         log_text = chat.log.toPlainText()
-        self.assertIn("File written", log_text)
+        self.assertIn(i18n._("File written: {path}").format(path=str(target)), log_text)
 
     def test_file_block_skipped_when_cancelled(self):
         """Cancelling the confirmation dialog leaves no file behind."""
@@ -381,7 +383,8 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
             chat._on_provider_response(reply)
 
         self.assertFalse(target.exists())
-        self.assertIn("cancelled", chat.log.toPlainText())
+        self.assertIn(i18n._("File write cancelled: {path}").format(path=str(target)),
+                      chat.log.toPlainText())
 
     def test_file_blocks_ignored_without_expert_mode(self):
         """Without expert mode, file blocks in replies are not offered."""
@@ -554,7 +557,7 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
             chat._on_send()
             chat._worker_thread.join(timeout=5)
         log_text = chat.log.toPlainText()
-        self.assertIn("answered offline", log_text)
+        self.assertIn(i18n._("(Provider unavailable, answered offline)"), log_text)
 
     def test_cancel_event_aborts_request(self):
         from src.ai_client import AIRequestCancelled
@@ -572,7 +575,7 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
             chat._on_send()
             chat._on_stop_clicked()
             chat._worker_thread.join(timeout=5)
-        self.assertIn("cancelled", chat.log.toPlainText().lower())
+        self.assertIn(i18n._("Request cancelled."), chat.log.toPlainText())
 
 
 if __name__ == "__main__":
