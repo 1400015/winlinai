@@ -90,17 +90,17 @@ def _path_or_ancestor_is_link(path) -> bool:
 
     An authorized directory can contain a subdirectory that is a symlink or
     junction pointing outside it; writing through such a subdirectory
-    would create the file outside the allowed root. Every existing
-    ancestor is inspected before any mkdir/open/unlink/replace.
+    would create the file outside the allowed root. Every ancestor is
+    inspected up to the root before any mkdir/open/unlink/replace: a
+    missing component does not end the walk, because the components above
+    it can still be links that the later mkdir would follow.
     """
     candidate = os.fspath(path)
     if _is_link(candidate):
         return True
     parent = os.path.dirname(candidate)
     while parent:
-        if not os.path.lexists(parent):
-            break
-        if _is_link(parent):
+        if os.path.lexists(parent) and _is_link(parent):
             return True
         previous = parent
         parent = os.path.dirname(parent)
@@ -309,7 +309,13 @@ def preview_diff(path: str, new_content: str) -> Optional[str]:
 
     Returns None if the file doesn't exist (new file).
     Returns the diff text, with truncation notice if file is too large.
+
+    The same ancestor-link refusal as the write boundary runs before the
+    open: os.path.isfile and open follow links, so exterior content behind
+    a linked subdirectory must never appear in a diff.
     """
+    if _path_or_ancestor_is_link(path):
+        return None
     path = os.path.expanduser(path)
     if not os.path.isfile(path):
         return None

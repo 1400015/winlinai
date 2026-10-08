@@ -471,6 +471,59 @@ class TestWriteBoundarySecurity(unittest.TestCase):
         except (OSError, NotImplementedError) as error:
             self.skipTest("The OS refused to create the directory link: " + str(error))
 
+    def test_missing_component_above_link_is_refused(self):
+        """sub/novo/file.txt with novo missing: the walk must reach sub."""
+        outside = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        allowed = self._allowed_dir()
+        sub = os.path.join(allowed, "sub")
+        self._make_directory_link(outside, sub)
+
+        def cleanup_link():
+            if os.path.islink(sub):
+                os.unlink(sub)
+            elif os.path.isdir(sub):
+                os.rmdir(sub)
+        self.addCleanup(cleanup_link)
+        # 'novo' does not exist yet; the write must not create it through sub.
+        target = os.path.join(sub, "novo", "file.txt")
+
+        # write: refused, nothing created outside
+        success, message, _backup = write_file_safe(
+            target, "attacker", allowed_dirs=[allowed])
+        self.assertFalse(success, message)
+        self.assertFalse(os.path.exists(os.path.join(outside, "novo")))
+
+        # read and delete through the same path: refused
+        success, _content, _truncated = read_file_preview(
+            target, allowed_dirs=[allowed])
+        self.assertFalse(success)
+        success, _message, _backup = delete_file_safe(
+            target, allowed_dirs=[allowed])
+        self.assertFalse(success)
+
+    def test_preview_diff_refuses_linked_ancestors(self):
+        """Exterior content must never appear in a diff through a link."""
+        from src.windows_file_actions import preview_diff
+        outside = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        exterior = os.path.join(outside, "leaked.txt")
+        with open(exterior, "w") as handle:
+            handle.write("exterior secret line\n")
+        allowed = self._allowed_dir()
+        sub = os.path.join(allowed, "sub")
+        self._make_directory_link(outside, sub)
+
+        def cleanup_link():
+            if os.path.islink(sub):
+                os.unlink(sub)
+            elif os.path.isdir(sub):
+                os.rmdir(sub)
+        self.addCleanup(cleanup_link)
+        # The exterior file exists behind the link; the diff must refuse it.
+        diff = preview_diff(os.path.join(sub, "leaked.txt"), "new content\n")
+        self.assertIsNone(diff)
+
     def test_planted_temporary_symlink_is_refused(self):
         # target.txt.tmp as a link to a file outside the allowed directory.
         outside = tempfile.mkdtemp()
