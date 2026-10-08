@@ -107,21 +107,20 @@ def _is_windows_installer_asset(name: str) -> bool:
     return any(keyword in lowered for keyword in ("windows", "winlinai", "setup"))
 
 
-def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Optional[Dict]:
+def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Dict:
     """Check GitHub for a newer release.
 
-    Returns:
-        Dict with update info if available, None otherwise:
-        {
-            "version": "1.5.0",
-            "name": "Release name",
-            "body": "Release notes",
-            "url": "https://github.com/.../releases/tag/v1.5.0",
-            "assets": [{"name": "WinLinAI-1.5.0-Setup.exe", "url": "...", "size": 12345678}]
-        }
+    Always returns a dict with a "status" key, so a check failure can never
+    be confused with being current:
+    - "unsupported": not running on Windows (no check happened at all)
+    - "current": a release tag exists and it is not newer
+    - "available": a newer release exists; keeps version, name, body, url,
+      published_at and assets as before
+    - "failed": urlopen failed, the body was not JSON, or the tag was empty.
+      Only the exception type is logged; the URL and body are never logged.
     """
     if not is_windows():
-        return None
+        return {"status": "unsupported"}
 
     try:
         import urllib.request
@@ -146,11 +145,11 @@ def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Optional[Dict]:
 
         latest_version = data.get("tag_name", "").lstrip("v")
         if not latest_version:
-            return None
+            return {"status": "failed"}
 
         if not is_newer_version(current, latest_version):
             logger.info(f"Already up to date (current: {current}, latest: {latest_version})")
-            return None
+            return {"status": "current", "version": latest_version}
 
         # Find Windows installer asset
         assets = []
@@ -166,6 +165,7 @@ def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Optional[Dict]:
                 })
 
         return {
+            "status": "available",
             "version": latest_version,
             "name": data.get("name", f"v{latest_version}"),
             "body": data.get("body", ""),
@@ -176,7 +176,7 @@ def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Optional[Dict]:
 
     except Exception as error:
         logger.warning(f"Update check failed: {type(error).__name__}")
-        return None
+        return {"status": "failed"}
 
 
 def download_update(asset: Dict, dest_dir: Optional[str] = None,

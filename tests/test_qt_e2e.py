@@ -548,7 +548,8 @@ class TestQtUpdatesE2E(TestQtE2EBase):
             "app.check_updates": True,
         }.get(key, default))
         config.set = Mock()
-        fake_update = {"version": "9.9.9", "url": "https://github.com/1400015/winlinai/releases"}
+        fake_update = {"status": "available", "version": "9.9.9",
+                       "url": "https://github.com/1400015/winlinai/releases"}
         p_worker, p_start, p_timer, p_check = self._sync_worker_patches(fake_update)
         with p_worker, p_start, p_timer, p_check:
             _maybe_check_updates(config, shell=None)
@@ -556,6 +557,7 @@ class TestQtUpdatesE2E(TestQtE2EBase):
         config.set.assert_any_call("update.version", "9.9.9")
 
     def test_maybe_check_updates_quiet_when_none(self):
+        """None (legacy worker) stays silent and stores nothing."""
         from src.qt_app import _maybe_check_updates
         config = Mock()
         config.get = Mock(side_effect=lambda key, default=None: {
@@ -567,6 +569,21 @@ class TestQtUpdatesE2E(TestQtE2EBase):
             _maybe_check_updates(config, shell=None)
         config.set.assert_not_called()
 
+    def test_maybe_check_updates_failed_check_stores_nothing(self):
+        """A failed check is not an update and is not 'up to date'."""
+        from src.qt_app import _maybe_check_updates
+        config = Mock()
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "app.check_updates": True,
+        }.get(key, default))
+        config.set = Mock()
+        for status in ("failed", "current", "unsupported"):
+            p_worker, p_start, p_timer, p_check = self._sync_worker_patches(
+                {"status": status})
+            with p_worker, p_start, p_timer, p_check:
+                _maybe_check_updates(config, shell=None)
+        config.set.assert_not_called()
+
     def test_maybe_check_updates_notifies_shell(self):
         from src.qt_app import _maybe_check_updates
         config = Mock()
@@ -575,7 +592,7 @@ class TestQtUpdatesE2E(TestQtE2EBase):
         }.get(key, default))
         config.set = Mock()
         shell = Mock()
-        fake_update = {"version": "9.9.9", "url": "https://example.com"}
+        fake_update = {"status": "available", "version": "9.9.9", "url": "https://example.com"}
         p_worker, p_start, p_timer, p_check = self._sync_worker_patches(fake_update)
         with p_worker, p_start, p_timer, p_check:
             _maybe_check_updates(config, shell=shell)

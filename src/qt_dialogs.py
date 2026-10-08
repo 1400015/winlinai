@@ -51,6 +51,28 @@ def export_session_to_file(store, session_id, filename):
         handle.write(export_to_text(messages))
 
 
+def update_status_phrase(update, current_version=""):
+    """Choose the settings status phrase for a check result.
+
+    Pure function (the dialog renders whatever it returns): a failure is
+    never worded as being up to date, and 'current' carries the running
+    version. 'available' carries the new version.
+    """
+    from . import i18n
+    status = (update or {}).get("status")
+    if status == "available":
+        return i18n._("New version available: {version}").format(
+            version=update["version"])
+    if status == "current":
+        return i18n._("You are up to date (version {version}).").format(
+            version=update.get("version") or current_version)
+    if status == "failed":
+        return i18n._("Could not check for updates.")
+    if status == "unsupported":
+        return i18n._("Update checks are supported on Windows.")
+    return i18n._("Updates have not been checked.")
+
+
 def checkbox_is_checked(state) -> bool:
     """Interpret a checkbox state from any Qt binding generation.
 
@@ -290,17 +312,27 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
 
     def _refresh_updates_status(self):
         from . import i18n
+        from .updater import get_current_version
         try:
             available = bool(self.config.get("update.available", False))
             version = self.config.get("update.version", "")
+            checked = self.config.get("update.checked", False)
+            checked_ok = self.config.get("update.last_result") == "current"
         except Exception:
-            available, version = False, ""
+            available, version, checked, checked_ok = False, "", False, False
         if available and version:
             self.updates_status.setText(
                 i18n._("New version available: {version}").format(version=version))
             self.updates_status.setStyleSheet("color: #4CAF50;")
+        elif checked_ok and checked:
+            # Only a completed 'current' check may say up to date.
+            self.updates_status.setText(
+                i18n._("You are up to date (version {version}).").format(
+                    version=version or get_current_version()))
+            self.updates_status.setStyleSheet("color: gray;")
         else:
-            self.updates_status.setText(i18n._("You are up to date."))
+            # No completed check: neutral, never 'up to date'.
+            self.updates_status.setText(i18n._("Updates have not been checked."))
             self.updates_status.setStyleSheet("color: gray;")
 
     def _on_updates_toggled(self, state):
@@ -326,35 +358,47 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
     def _on_update_check_done(self, update):
         from . import i18n
         from .updater import get_current_version
-        if update is None:
-            try:
-                self.config.set("update.available", False)
-            except Exception:
-                pass
-            self.updates_status.setText(
-                i18n._("You are up to date (version {version}).").format(
-                    version=get_current_version()))
-            self.updates_status.setStyleSheet("color: gray;")
-        else:
+        result = update or {}
+        status = result.get("status")
+        try:
+            self.config.set("update.checked", True)
+            self.config.set("update.last_result", status)
+        except Exception:
+            pass
+        if status == "available":
             try:
                 self.config.set("update.available", True)
-                self.config.set("update.version", update["version"])
-                self.config.set("update.url", update["url"])
+                self.config.set("update.version", result["version"])
+                self.config.set("update.url", result["url"])
             except Exception:
                 pass
             self.updates_status.setText(
-                i18n._("New version available: {version}").format(
-                    version=update["version"]))
+                update_status_phrase(result, get_current_version()))
             self.updates_status.setStyleSheet("color: #4CAF50;")
             # Offer to open the releases page (no auto-download: honest + safe)
             reply = QtWidgets.QMessageBox.question(
                 self, i18n._("Update available"),
                 i18n._("WinLinAI {version} is available. Open the releases page?").format(
-                    version=update["version"]),
+                    version=result["version"]),
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
                 import webbrowser
-                webbrowser.open(update["url"])
+                webbrowser.open(result["url"])
+        elif status == "current":
+            try:
+                self.config.set("update.available", False)
+            except Exception:
+                pass
+            self.updates_status.setText(
+                update_status_phrase(result, get_current_version()))
+            self.updates_status.setStyleSheet("color: gray;")
+        else:
+            # 'failed' or 'unsupported': never say up to date, and never
+            # erase a previously stored available update.
+            self.updates_status.setText(
+                update_status_phrase(result, get_current_version()))
+            self.updates_status.setStyleSheet("color: gray;")
+            return
 
     def _build_autostart_section(self, layout, i18n):
         """Add the autostart checkbox (Windows only, hidden elsewhere)."""

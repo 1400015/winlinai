@@ -235,7 +235,10 @@ def _maybe_check_updates(config_manager, shell):
         return check_for_updates()
 
     def on_finished(update):
-        if update is None:
+        # Only a confirmed 'available' result may notify or mark the config;
+        # 'failed', 'current' and 'unsupported' show nothing and store
+        # nothing (a failure is not an update, and it is not 'up to date').
+        if not isinstance(update, dict) or update.get("status") != "available":
             return
         try:
             config_manager.set("update.available", True)
