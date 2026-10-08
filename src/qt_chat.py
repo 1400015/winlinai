@@ -47,6 +47,46 @@ def append_is_bounded(log_chars, chunk):
     return log_chars + len(chunk) <= MAX_LOG_CHARS
 
 
+MAX_CONTEXT_MESSAGES = 20
+MAX_CONTEXT_CHARS = 12000
+
+
+def apply_context_budget(messages, max_messages, max_chars):
+    """Return a truncated copy of the request messages within the budget.
+
+    Same contract as the GTK track (_build_request_messages): keep the
+    last max_messages, then drop the oldest while the character total
+    exceeds max_chars, always keeping at least the newest message. The
+    system message provider_reply_text prepends is not part of this
+    count. The input list is never modified.
+    """
+    bounded = [dict(message) for message in messages
+               if message.get("role") in ("user", "assistant") and message.get("content")]
+    if len(bounded) > max_messages:
+        bounded = bounded[-max_messages:]
+    total = sum(len(message["content"]) for message in bounded)
+    while len(bounded) > 1 and total > max_chars:
+        removed = bounded.pop(0)
+        total -= len(removed["content"])
+    return bounded
+
+
+def request_budget(config_manager):
+    """Read the configured context budget with GTK-safe_number semantics.
+
+    Out-of-range or invalid values fall back to the defaults; there are no
+    clamps (1 and 501 both mean the default, like theme_utils.safe_number).
+    """
+    from .theme_utils import safe_number
+    max_messages = safe_number(
+        config_manager.get("context.max_messages"), MAX_CONTEXT_MESSAGES,
+        int, minimum=2, maximum=500)
+    max_chars = safe_number(
+        config_manager.get("context.max_chars"), MAX_CONTEXT_CHARS,
+        int, minimum=1000, maximum=400000)
+    return max_messages, max_chars
+
+
 def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel_event=None,
                         expert=False, distro=None, query="", context=None):
     """Pure send path: call the AI provider and return its answer.
@@ -498,8 +538,15 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         from . import i18n
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         # Immutable snapshot: the worker reads this, the main thread keeps
-        # appending to self._pending_messages for the next turn.
-        messages = list(self._pending_messages)
+        # appending to self._pending_messages for the next turn. The request
+        # is bounded by the configured context budget; the pending list, the
+        # visible log and the history store stay complete, and the budget is
+        # re-read on every turn.
+        try:
+            max_messages, max_chars = request_budget(self.config)
+        except Exception:
+            max_messages, max_chars = MAX_CONTEXT_MESSAGES, MAX_CONTEXT_CHARS
+        messages = apply_context_budget(self._pending_messages, max_messages, max_chars)
         # Prepare attachments on the UI thread, before the worker starts: a
         # preparation failure must be visible and must not let the request
         # continue as if the image had been sent. The worker receives ready
