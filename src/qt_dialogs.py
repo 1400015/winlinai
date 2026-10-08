@@ -30,7 +30,56 @@ else:
 # Pure presentation logic (no Qt import needed to test these)
 # ---------------------------------------------------------------------------
 
-def provider_rows(config, providers=("openrouter", "google")):
+def export_session_to_file(store, session_id, filename):
+    """Write a session export to filename, choosing the format by extension.
+
+    Pure logic, no Qt: the history dialog calls this so the behaviour is
+    testable without a window on every core job. export_session's second
+    argument is the format (markdown/json) and it returns the text; a path
+    is never passed as the format. Plain .txt uses export_to_text.
+    """
+    lower = filename.lower()
+    if hasattr(store, "export_session") and lower.endswith((".md", ".json")):
+        fmt = "json" if lower.endswith(".json") else "markdown"
+        text = store.export_session(session_id, fmt)
+        with open(filename, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return
+    from .qt_conversation_actions import export_to_text
+    messages = store.load_messages(session_id)
+    with open(filename, "w", encoding="utf-8") as handle:
+        handle.write(export_to_text(messages))
+
+
+def checkbox_is_checked(state) -> bool:
+    """Interpret a checkbox state from any Qt binding generation.
+
+    stateChanged may deliver the integer 2/0 (PySide2, older PySide6 and
+    the untyped fallback) or a Qt.CheckState value (recent PySide6, where
+    comparing the enum with the int 2 is always False). Both mark the same
+    preference; a single decision is shared by every slot.
+    """
+    checked_states = (2,)
+    unchecked_states = (0,)
+    state_value = getattr(state, "value", state)
+    if state_value in checked_states:
+        return True
+    if state_value in unchecked_states:
+        return False
+    try:
+        from PySide6 import QtCore
+    except ImportError:
+        return bool(state)
+    checked = getattr(QtCore.Qt, "Checked", None)
+    if checked is not None and (state is checked or state == checked):
+        return True
+    unchecked = getattr(QtCore.Qt, "Unchecked", None)
+    if unchecked is not None and (state is unchecked or state == unchecked):
+        return False
+    return bool(state)
+
+
+def provider_rows(config, providers=("openrouter", "google_ai_studio")):
     """Rows for the API settings table, without exposing stored keys."""
     rows = []
     for provider in providers:
@@ -256,7 +305,7 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
 
     def _on_updates_toggled(self, state):
         try:
-            self.config.set("app.check_updates", state == QtCore.Qt.Checked)
+            self.config.set("app.check_updates", checkbox_is_checked(state))
         except Exception:
             logger.warning("Could not persist update-check preference")
 
@@ -329,7 +378,7 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
     def _on_autostart_changed(self, state):
         from . import i18n
         from .windows_autostart import set_autostart, is_autostart_enabled
-        enabled = state == QtCore.Qt.Checked
+        enabled = checkbox_is_checked(state)
         result = set_autostart(enabled)
         status = is_autostart_enabled()
         self.autostart_status.setText(
@@ -528,16 +577,7 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         if not filename:
             return
         try:
-            if hasattr(self.store, "export_session"):
-                self.store.export_session(session_id, filename)
-            else:
-                # Fallback: export messages manually
-                messages = self.store.load_messages(session_id)
-                with open(filename, "w", encoding="utf-8") as f:
-                    for msg in messages:
-                        role = msg.get("role", "unknown")
-                        content = msg.get("content", "")
-                        f.write(f"**{role}**: {content}\n\n")
+            export_session_to_file(self.store, session_id, filename)
         except Exception as error:
             logger.error("Export failed: %s", type(error).__name__)
             QtWidgets.QMessageBox.warning(
