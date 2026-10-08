@@ -227,3 +227,80 @@ class TestProposeAndVolumes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHandleRoutingWindows(unittest.TestCase):
+    """handle() routing on Windows: plural listings reach the probes."""
+
+    SERVICE = {"name": "wuauserv", "display_name": "Windows Update",
+               "status": "Running", "start_type": "Manual"}
+
+    def _handle(self, message, platform="windows"):
+        assistant = _assistant(platform)
+        return assistant, assistant.handle(message, "pt")
+
+    def test_plural_service_listing_calls_list_services(self):
+        with patch("src.windows_system_actions.list_services",
+                   return_value=(True, [self.SERVICE], None)) as probe:
+            _assistant, reply = self._handle("listar serviços")
+            probe.assert_called_once()
+            self.assertIn("wuauserv", reply.text)
+            self.assertEqual(reply.commands, [])
+            _assistant, reply = self._handle("lista os serviços")
+        self.assertEqual(probe.call_count, 2)
+        self.assertIn("wuauserv", reply.text)
+
+    def test_plural_without_accent_also_routes(self):
+        with patch("src.windows_system_actions.list_services",
+                   return_value=(True, [self.SERVICE], None)) as probe:
+            _assistant, reply = self._handle("listar servicos")
+        probe.assert_called_once()
+        self.assertIn("wuauserv", reply.text)
+
+    def test_single_service_status_via_handle(self):
+        with patch("src.windows_system_actions.get_service_status",
+                   return_value=(True, self.SERVICE, None)) as status:
+            _assistant, reply = self._handle("estado do serviço wuauserv")
+        status.assert_called_once_with("wuauserv")
+        self.assertEqual(reply.commands, [])
+
+    def test_service_error_phrase_does_not_probe(self):
+        with patch("src.windows_system_actions.list_services") as services, \
+                patch("src.windows_system_actions.get_service_status") as status:
+            _assistant, reply = self._handle("serviços com erro")
+        services.assert_not_called()
+        status.assert_not_called()
+
+    def test_process_error_phrase_does_not_probe(self):
+        with patch("src.windows_system_actions.list_processes") as processes:
+            _assistant, reply = self._handle("processos com erro")
+        processes.assert_not_called()
+
+    def test_mutation_via_handle_refuses_without_probes(self):
+        with patch("src.windows_system_actions.list_services") as services, \
+                patch("src.windows_system_actions.get_service_status") as status:
+            _assistant, reply = self._handle("iniciar serviço wuauserv")
+            self.assertEqual(reply.commands, [])
+            for forbidden in ("systemctl", "sc.exe", "net start",
+                              "Start-Service", "Stop-Service"):
+                self.assertNotIn(forbidden, reply.text)
+            _assistant, reply = self._handle("iniciar serviços")
+            self.assertEqual(reply.commands, [])
+            for forbidden in ("systemctl", "sc.exe", "net start",
+                              "Start-Service", "Stop-Service"):
+                self.assertNotIn(forbidden, reply.text)
+        services.assert_not_called()
+        status.assert_not_called()
+
+    def test_plain_processes_via_handle_probes(self):
+        with patch("src.windows_system_actions.list_processes",
+                   return_value=(True, [{"name": "explorer", "id": 4,
+                                         "cpu": 0.5, "memory_mb": 80.0}], None)) as processes:
+            _assistant, reply = self._handle("processos")
+        processes.assert_called_once()
+        self.assertIn("explorer", reply.text)
+
+    def test_linux_plural_listing_stays_intentless(self):
+        with patch("src.windows_system_actions.list_services") as services:
+            _assistant, reply = self._handle("listar serviços", platform="linux")
+        services.assert_not_called()

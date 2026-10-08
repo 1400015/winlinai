@@ -610,12 +610,22 @@ class OfflineAssistant:
             return self._local_guides(text, lang)
 
         intent, score = _match_intent(low)
+        if self._platform == "windows" and not intent:
+            # The service keywords match the singular only, so plain plural
+            # listings ("listar serviços", "lista os serviços") arrive with
+            # an empty intent. Promote the intent before the problem test so
+            # the diagnostic branch keeps catching "serviços com erro"; only
+            # the mutation guard and this promotion change - the services
+            # reply itself refuses mutations with text alone.
+            if re.search(r"\bservi[cç]os\b|\bservicos\b", low):
+                intent, score = "services", 1
         if not intent or score == 0:
             # Native Windows: a whole-word process(es) mention with no other
-            # recognized intent answers with the read-only process table.
-            # Phrases with problems, errors or diagnostics already returned
-            # through the branches above; this only catches the plain list.
+            # recognized intent answers with the read-only process table -
+            # but never when the phrase describes a problem or failure: those
+            # keep their diagnostic and procedure-search branches.
             if (self._platform == "windows"
+                    and not _PROBLEM_RE.search(low)
                     and not any(token in text for token in FORBIDDEN_TOKENS)
                     and re.search(r"\bprocess(?:o|os|es)?\b", low)):
                 return self._windows_processes_reply(lang)
