@@ -33,8 +33,15 @@ def main():
         config.set('app.language', 'pt')
         if not config.flush():
             raise RuntimeError('Configuration could not be persisted')
-        if not config.get_available_themes():
-            raise RuntimeError('The installed wheel has no themes')
+        from src import qt_theme
+        themes = set(qt_theme.available_themes())
+        for expected in ('dark', 'light', 'dracula', 'solarized-dark'):
+            if expected not in themes:
+                raise RuntimeError(
+                    'The installed wheel is missing theme: ' + expected)
+        light = qt_theme.load_theme('light')
+        if not light.get('colors'):
+            raise RuntimeError('The installed light theme is empty')
         shell = QtShell(config, detect_platform(), history_path=Path(user_directory) / 'history.json')
         try:
             if shell.chat is None or shell.chat.offline is None or shell.history_store is None:

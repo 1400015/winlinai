@@ -82,13 +82,29 @@ class TestInnoSetupReferences(unittest.TestCase):
                 self.assertTrue(path.exists(),
                                 f"Source file missing: {path}")
 
-    def test_app_version_matches_project(self):
-        """The .iss version should match src/_version.py."""
-        from src._version import __version__
-        match = re.search(r'#define MyAppVersion "([^"]+)"', self.iss_text)
-        self.assertIsNotNone(match)
-        self.assertEqual(match.group(1), __version__,
-                         "winlinai.iss version does not match src/_version.py")
+    def test_iss_version_is_not_hardcoded(self):
+        """The .iss must not pin a version: the build script passes it."""
+        self.assertNotIn('#define MyAppVersion "1.4.2"', self.iss_text)
+        self.assertIn("#ifndef MyAppVersion", self.iss_text)
+
+    def test_prepare_to_install_returns_string(self):
+        """Inno Setup 6 declares PrepareToInstall as returning String."""
+        self.assertIn(
+            "function PrepareToInstall(var NeedsRestart: Boolean): String;",
+            self.iss_text)
+
+    def test_build_script_reads_version_from_source(self):
+        """The PowerShell build passes /DMyAppVersion from src/_version.py."""
+        script = (INSTALLER_DIR / "build-installer.ps1").read_text(encoding="utf-8")
+        self.assertIn("_version.py", script)
+        self.assertIn("/DMyAppVersion=", script)
+
+    def test_build_script_cleans_only_with_clean_flag(self):
+        """dist/build survive a plain run; -SkipExe reuses them."""
+        script = (INSTALLER_DIR / "build-installer.ps1").read_text(encoding="utf-8")
+        self.assertNotIn("if ($Clean -or (Test-Path $DistDir)", script)
+        self.assertIn("if ($Clean) {", script)
+        self.assertIn("-SkipExe requires", script)
 
 
 class TestPyInstallerSpec(unittest.TestCase):
@@ -105,6 +121,21 @@ class TestPyInstallerSpec(unittest.TestCase):
     def test_spec_is_valid_python(self):
         """The .spec must be parseable Python."""
         ast.parse(self.spec_text)
+
+    def test_spec_entry_point_is_outside_the_package(self):
+        """The analyzed script must not be src/app.py (relative imports,
+        GTK path); the entry point lives outside the package."""
+        self.assertNotIn("'src' / 'app.py'", self.spec_text.replace('"', "'"))
+        self.assertNotIn("src.app.py", self.spec_text)
+        self.assertIn("qt_entry.py", self.spec_text)
+        entry = INSTALLER_DIR / "qt_entry.py"
+        self.assertTrue(entry.is_file())
+        entry_text = entry.read_text(encoding="utf-8")
+        self.assertNotIn("import gi", entry_text)
+        self.assertNotIn("from ..", entry_text)
+        self.assertIn("from src.qt_app import run", entry_text)
+        # pathex keeps the project root so `import src` works when frozen.
+        self.assertIn("pathex=[str(project_root)]", self.spec_text)
 
     def test_spec_has_no_removed_pyinstaller6_options(self):
         """Options removed in PyInstaller 6 must not be present."""

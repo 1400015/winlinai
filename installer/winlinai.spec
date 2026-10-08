@@ -49,7 +49,7 @@ hiddenimports = [
 ]
 
 a = Analysis(
-    [str(project_root / 'src' / 'app.py')],
+    [str(project_root / 'installer' / 'qt_entry.py')],
     pathex=[str(project_root)],
     binaries=[],
     datas=datas,

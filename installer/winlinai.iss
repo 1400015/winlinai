@@ -12,7 +12,11 @@
 ;   powershell -ExecutionPolicy Bypass -File installer/build-installer.ps1
 
 #define MyAppName "WinLinAI"
-#define MyAppVersion "1.4.2"
+#ifndef MyAppVersion
+  // The build script passes /DMyAppVersion=<version from src/_version.py>;
+  // this fallback only serves ad-hoc compiles.
+  #define MyAppVersion "0.0.0"
+#endif
 #define MyAppPublisher "WinLinAI Team"
 #define MyAppURL "https://github.com/1400015/winlinai"
 #define MyAppExeName "winlinai.exe"
@@ -89,13 +93,14 @@ begin
 end;
 
 // Check if app is running and close it before uninstall
-function PrepareToInstall(var NeedsRestart: Boolean): Boolean;
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
-  // Try to close running instances
+  // Try to close running instances; a taskkill failure means the app is
+  // simply not running, which must not abort the installation.
   Exec('taskkill', '/F /IM winlinai.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Result := True;
+  Result := '';
 end;
 
 // Custom welcome message
