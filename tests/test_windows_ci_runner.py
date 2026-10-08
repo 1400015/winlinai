@@ -33,10 +33,12 @@ class TestWindowsCi(unittest.TestCase):
                          'test_windows_file_actions.py', 'test_windows_screenshot.py',
                          'test_windows_system_actions.py', 'test_windows_phase1.py',
                          'test_pwsh_output.py', 'test_qt_phase4a.py',
+                         'test_readme_clone_urls.py',
                          'test_device_dialogs.py'):
                 (Path(directory) / name).touch()
             suite = discover_windows_suite(directory, loader)
         self.assertEqual(loaded, ['test_pwsh_output.py', 'test_qt_phase4a.py',
+                                  'test_readme_clone_urls.py',
                                   'test_windows_file_actions.py',
                                   'test_windows_foundation_bootstrap.py',
                                   'test_windows_foundation_storage.py',
