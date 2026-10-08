@@ -30,7 +30,78 @@ else:
 # Pure presentation logic (no Qt import needed to test these)
 # ---------------------------------------------------------------------------
 
-def provider_rows(config, providers=("openrouter", "google")):
+def export_session_to_file(store, session_id, filename):
+    """Write a session export to filename, choosing the format by extension.
+
+    Pure logic, no Qt: the history dialog calls this so the behaviour is
+    testable without a window on every core job. export_session's second
+    argument is the format (markdown/json) and it returns the text; a path
+    is never passed as the format. Plain .txt uses export_to_text.
+    """
+    lower = filename.lower()
+    if hasattr(store, "export_session") and lower.endswith((".md", ".json")):
+        fmt = "json" if lower.endswith(".json") else "markdown"
+        text = store.export_session(session_id, fmt)
+        with open(filename, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return
+    from .qt_conversation_actions import export_to_text
+    messages = store.load_messages(session_id)
+    with open(filename, "w", encoding="utf-8") as handle:
+        handle.write(export_to_text(messages))
+
+
+def update_status_phrase(update, current_version=""):
+    """Choose the settings status phrase for a check result.
+
+    Pure function (the dialog renders whatever it returns): a failure is
+    never worded as being up to date, and 'current' carries the running
+    version. 'available' carries the new version.
+    """
+    from . import i18n
+    status = (update or {}).get("status")
+    if status == "available":
+        return i18n._("New version available: {version}").format(
+            version=update["version"])
+    if status == "current":
+        return i18n._("You are up to date (version {version}).").format(
+            version=update.get("version") or current_version)
+    if status == "failed":
+        return i18n._("Could not check for updates.")
+    if status == "unsupported":
+        return i18n._("Update checks are supported on Windows.")
+    return i18n._("Updates have not been checked.")
+
+
+def checkbox_is_checked(state) -> bool:
+    """Interpret a checkbox state from any Qt binding generation.
+
+    stateChanged may deliver the integer 2/0 (PySide2, older PySide6 and
+    the untyped fallback) or a Qt.CheckState value (recent PySide6, where
+    comparing the enum with the int 2 is always False). Both mark the same
+    preference; a single decision is shared by every slot.
+    """
+    checked_states = (2,)
+    unchecked_states = (0,)
+    state_value = getattr(state, "value", state)
+    if state_value in checked_states:
+        return True
+    if state_value in unchecked_states:
+        return False
+    try:
+        from PySide6 import QtCore
+    except ImportError:
+        return bool(state)
+    checked = getattr(QtCore.Qt, "Checked", None)
+    if checked is not None and (state is checked or state == checked):
+        return True
+    unchecked = getattr(QtCore.Qt, "Unchecked", None)
+    if unchecked is not None and (state is unchecked or state == unchecked):
+        return False
+    return bool(state)
+
+
+def provider_rows(config, providers=("openrouter", "google_ai_studio")):
     """Rows for the API settings table, without exposing stored keys."""
     rows = []
     for provider in providers:
@@ -241,22 +312,32 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
 
     def _refresh_updates_status(self):
         from . import i18n
+        from .updater import get_current_version
         try:
             available = bool(self.config.get("update.available", False))
             version = self.config.get("update.version", "")
+            checked = self.config.get("update.checked", False)
+            checked_ok = self.config.get("update.last_result") == "current"
         except Exception:
-            available, version = False, ""
+            available, version, checked, checked_ok = False, "", False, False
         if available and version:
             self.updates_status.setText(
                 i18n._("New version available: {version}").format(version=version))
             self.updates_status.setStyleSheet("color: #4CAF50;")
+        elif checked_ok and checked:
+            # Only a completed 'current' check may say up to date.
+            self.updates_status.setText(
+                i18n._("You are up to date (version {version}).").format(
+                    version=version or get_current_version()))
+            self.updates_status.setStyleSheet("color: gray;")
         else:
-            self.updates_status.setText(i18n._("You are up to date."))
+            # No completed check: neutral, never 'up to date'.
+            self.updates_status.setText(i18n._("Updates have not been checked."))
             self.updates_status.setStyleSheet("color: gray;")
 
     def _on_updates_toggled(self, state):
         try:
-            self.config.set("app.check_updates", state == QtCore.Qt.Checked)
+            self.config.set("app.check_updates", checkbox_is_checked(state))
         except Exception:
             logger.warning("Could not persist update-check preference")
 
@@ -277,35 +358,47 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
     def _on_update_check_done(self, update):
         from . import i18n
         from .updater import get_current_version
-        if update is None:
-            try:
-                self.config.set("update.available", False)
-            except Exception:
-                pass
-            self.updates_status.setText(
-                i18n._("You are up to date (version {version}).").format(
-                    version=get_current_version()))
-            self.updates_status.setStyleSheet("color: gray;")
-        else:
+        result = update or {}
+        status = result.get("status")
+        try:
+            self.config.set("update.checked", True)
+            self.config.set("update.last_result", status)
+        except Exception:
+            pass
+        if status == "available":
             try:
                 self.config.set("update.available", True)
-                self.config.set("update.version", update["version"])
-                self.config.set("update.url", update["url"])
+                self.config.set("update.version", result["version"])
+                self.config.set("update.url", result["url"])
             except Exception:
                 pass
             self.updates_status.setText(
-                i18n._("New version available: {version}").format(
-                    version=update["version"]))
+                update_status_phrase(result, get_current_version()))
             self.updates_status.setStyleSheet("color: #4CAF50;")
             # Offer to open the releases page (no auto-download: honest + safe)
             reply = QtWidgets.QMessageBox.question(
                 self, i18n._("Update available"),
                 i18n._("WinLinAI {version} is available. Open the releases page?").format(
-                    version=update["version"]),
+                    version=result["version"]),
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
                 import webbrowser
-                webbrowser.open(update["url"])
+                webbrowser.open(result["url"])
+        elif status == "current":
+            try:
+                self.config.set("update.available", False)
+            except Exception:
+                pass
+            self.updates_status.setText(
+                update_status_phrase(result, get_current_version()))
+            self.updates_status.setStyleSheet("color: gray;")
+        else:
+            # 'failed' or 'unsupported': never say up to date, and never
+            # erase a previously stored available update.
+            self.updates_status.setText(
+                update_status_phrase(result, get_current_version()))
+            self.updates_status.setStyleSheet("color: gray;")
+            return
 
     def _build_autostart_section(self, layout, i18n):
         """Add the autostart checkbox (Windows only, hidden elsewhere)."""
@@ -329,7 +422,7 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
     def _on_autostart_changed(self, state):
         from . import i18n
         from .windows_autostart import set_autostart, is_autostart_enabled
-        enabled = state == QtCore.Qt.Checked
+        enabled = checkbox_is_checked(state)
         result = set_autostart(enabled)
         status = is_autostart_enabled()
         self.autostart_status.setText(
@@ -423,15 +516,41 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         return self.list_widget.currentItem()
 
     def _new(self):
+        # The guard runs before create_session: with a request in flight the
+        # store must not gain an active session the chat cannot show.
+        if self._session_change_refused():
+            return
         session = self.store.create_session(select=True)
         session_id = session.get("id") if isinstance(session, dict) else session
         if callable(self.on_new):
             self.on_new(session_id)
         self.reload()
 
+    def _session_change_refused(self):
+        """Refuse session changes while the chat has a request in flight.
+
+        The chat widget (when reachable through the parent chain) owns the
+        pending-request state; this dialog only surfaces the refusal.
+        """
+        widget = self.parent()
+        while widget is not None:
+            guard = getattr(widget, "chat", None)
+            if guard is not None and hasattr(guard, "request_in_flight"):
+                if guard.request_in_flight():
+                    from . import i18n
+                    QtWidgets.QMessageBox.information(
+                        self, i18n._("Conversation History"),
+                        i18n._("Wait for the pending answer before changing conversations."))
+                    return True
+                return False
+            widget = widget.parent()
+        return False
+
     def _open(self):
         session_id = self.selected_session_id()
         if session_id is None:
+            return
+        if self._session_change_refused():
             return
         self.store.select_session(session_id)
         if callable(self.on_open):
@@ -442,6 +561,8 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         """Toggle archive status of the selected session."""
         item = self._selected_item()
         if item is None:
+            return
+        if self._session_change_refused():
             return
         session_id = item.data(QtCore.Qt.UserRole)
         is_archived = bool(item.data(QtCore.Qt.UserRole + 1))
@@ -466,6 +587,8 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         from . import i18n
         item = self._selected_item()
         if item is None:
+            return
+        if self._session_change_refused():
             return
         session_id = item.data(QtCore.Qt.UserRole)
         reply = QtWidgets.QMessageBox.question(
@@ -498,16 +621,7 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         if not filename:
             return
         try:
-            if hasattr(self.store, "export_session"):
-                self.store.export_session(session_id, filename)
-            else:
-                # Fallback: export messages manually
-                messages = self.store.load_messages(session_id)
-                with open(filename, "w", encoding="utf-8") as f:
-                    for msg in messages:
-                        role = msg.get("role", "unknown")
-                        content = msg.get("content", "")
-                        f.write(f"**{role}**: {content}\n\n")
+            export_session_to_file(self.store, session_id, filename)
         except Exception as error:
             logger.error("Export failed: %s", type(error).__name__)
             QtWidgets.QMessageBox.warning(

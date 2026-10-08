@@ -243,7 +243,8 @@ class HistoryStore:
         try:
             with json_lock(path):
                 source_fd = open_regular(path)
-                with os.fdopen(source_fd, "rb") as source:
+                source = os.fdopen(source_fd, "rb")
+                try:
                     original = os.fstat(source.fileno())
                     if not stat.S_ISREG(original.st_mode):
                         raise ValueError("History recovery requires a regular file")
@@ -253,13 +254,36 @@ class HistoryStore:
                         shutil.copyfileobj(source, target, 65536)
                         target.flush()
                         os.fsync(target.fileno())
-                    current = os.stat(str(path), follow_symlinks=False)
-                    if (_file_identity(original) != _file_identity(current)
-                            or _file_identity(original) != _file_identity(os.fstat(source.fileno()))):
-                        raise OSError("History changed during recovery; original file preserved")
+                    if os.name == 'nt':
+                        # On Windows the CRT reports st_ino=0 for open_osfhandle
+                        # descriptors while os.stat by name returns the real file
+                        # index, so the POSIX stat fields cannot be compared
+                        # across the two. Compare the open descriptor's native
+                        # identity with a fresh name-based open instead: an
+                        # external replacement of the file changes the index.
+                        from .platform import windows_files
+                        opened = windows_files.handle_identity(source.fileno())
+                        current_fd = open_regular(path)
+                        try:
+                            current = windows_files.handle_identity(current_fd)
+                        finally:
+                            os.close(current_fd)
+                        if opened != current:
+                            raise OSError("History changed during recovery; original file preserved")
+                    else:
+                        current = os.stat(str(path), follow_symlinks=False)
+                        if (_file_identity(original) != _file_identity(current)
+                                or _file_identity(original) != _file_identity(os.fstat(source.fileno()))):
+                            raise OSError("History changed during recovery; original file preserved")
                     sync_directory(path.parent)
                     complete = True
-                    atomic_json_write(path, document, max_bytes=MAX_HISTORY_BYTES)
+                finally:
+                    # The read handle is released before publication: the
+                    # Windows handle-based rename refuses to replace a target
+                    # held open, and the identity checks plus the stable sidecar
+                    # lock already serialize cooperating writers.
+                    source.close()
+                atomic_json_write(path, document, max_bytes=MAX_HISTORY_BYTES)
         except BaseException as error:
             if backup is not None:
                 if complete:

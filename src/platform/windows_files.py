@@ -11,10 +11,13 @@ loss of power on every filesystem.
 
 from contextlib import contextmanager
 import errno
+import logging
 import os
 from pathlib import Path
 import secrets
 import stat
+
+logger = logging.getLogger(__name__)
 
 
 def _modules():
@@ -122,12 +125,14 @@ def _check_handle(handle, directory=False):
         raise ValueError("Storage input must be a regular {}".format("directory" if directory else "file"))
 
 
-def _directory_handle(path, write_acl=False):
+def _directory_handle(path, write_acl=False, share_write=False):
     _, _, _, con, file, _ = _modules()
     access = (_rights().FILE_READ_ATTRIBUTES | _rights().FILE_TRAVERSE | con.READ_CONTROL
               | (con.WRITE_DAC if write_acl else 0))
+    share = (con.FILE_SHARE_READ | con.FILE_SHARE_WRITE | con.FILE_SHARE_DELETE
+             if share_write else con.FILE_SHARE_READ)
     handle = _call(file.CreateFile, str(path), access,
-                   con.FILE_SHARE_READ, None, con.OPEN_EXISTING,
+                   share, None, con.OPEN_EXISTING,
                    con.FILE_FLAG_BACKUP_SEMANTICS | file.FILE_FLAG_OPEN_REPARSE_POINT, None)
     try:
         _check_handle(handle, directory=True)
@@ -138,8 +143,15 @@ def _directory_handle(path, write_acl=False):
 
 
 @contextmanager
-def guarded_path(path, create_parents=False):
-    """Pin parents against renames and concurrent writes to reparse metadata."""
+def guarded_path(path, create_parents=False, writable_parent=False):
+    """Pin parents against renames and concurrent writes to reparse metadata.
+
+    With writable_parent=True the immediate parent is pinned with full
+    sharing instead: publication renames a file by its fully qualified name,
+    which requires the kernel to open the parent directory for write and
+    delete access, and a read-only shared pin would block it (WinError 32).
+    Ancestors keep the restrictive pin either way.
+    """
     _, _, _, _, file, _ = _modules()
     path = _safe_path(path)
     handles = []
@@ -148,8 +160,9 @@ def guarded_path(path, create_parents=False):
         handles.append(_directory_handle(current))
         for part in path.parent.parts[1:]:
             current /= part
+            last = part == path.parent.parts[-1]
             try:
-                handle = _directory_handle(current)
+                handle = _directory_handle(current, share_write=writable_parent and last)
             except FileNotFoundError:
                 if not create_parents:
                     raise
@@ -157,7 +170,7 @@ def guarded_path(path, create_parents=False):
                     _call(file.CreateDirectory, str(current), _private_security(directory=True))
                 except FileExistsError:
                     pass
-                handle = _directory_handle(current)
+                handle = _directory_handle(current, share_write=writable_parent and last)
             handles.append(handle)
         yield path, handles[-1]
     finally:
@@ -176,6 +189,13 @@ def _check_owned(handle, private=False):
     descriptor = _call(security.GetSecurityInfo, handle, security.SE_FILE_OBJECT,
                        security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION)
     trusted = _trusted_sids()
+    # S-1-3-4 (OWNER RIGHTS) constrains what the owner may do; it never grants
+    # access to another principal, and the actual owner is verified separately
+    # by GetSecurityDescriptorOwner above. CI runners inherit such an ACE
+    # (type=ACCESS_ALLOWED, flags=OBJECT_INHERIT|CONTAINER_INHERIT,
+    # mask=FILE_ALL_ACCESS) from their %TEMP% directories. A native test now
+    # pins that strangers (S-1-1-0) keep being refused.
+    owner_rights = security.ConvertStringSidToSid("S-1-3-4")
     if descriptor.GetSecurityDescriptorOwner() not in _owner_sids():
         raise ValueError("The storage object must be owned by the current user")
     acl = descriptor.GetSecurityDescriptorDacl()
@@ -195,7 +215,13 @@ def _check_owned(handle, private=False):
         if kind != security.ACCESS_ALLOWED_ACE_TYPE:
             raise ValueError("An unsupported storage ACL cannot be verified")
         mask, sid = ace[1], ace[2]
-        if sid not in trusted and (private or mask & unsafe):
+        if sid not in trusted and sid != owner_rights and (private or mask & unsafe):
+            # Diagnostics only: identify the rejected ACE (SID, type, flags,
+            # mask) without logging file contents or credentials. The policy
+            # itself is unchanged until a native test shows the actual ACE.
+            logger.warning(
+                "Rejected storage ACE: sid=%s type=%s flags=%s mask=%s private=%s",
+                sid, kind, flags, hex(mask), private)
             raise ValueError("The storage ACL grants access to another principal")
 
 
@@ -293,6 +319,19 @@ def _identity(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
+def handle_identity(descriptor):
+    """Return the native (volume, index) identity of an open CRT descriptor.
+
+    The CRT reports st_ino=0 for open_osfhandle descriptors, so the POSIX
+    stat fields cannot identify a file on Windows; this uses the same native
+    information the storage layer already trusts.
+    """
+    msvcrt, _, _, con, file, _ = _modules()
+    handle = msvcrt.get_osfhandle(descriptor)
+    information = _call(file.GetFileInformationByHandle, handle)
+    return information[4], (information[8] << 32) | information[9]
+
+
 def owned_identity(path):
     """Revalidate the parent ACL and file identity without following links."""
     with guarded_path(path) as (path, parent):
@@ -342,7 +381,7 @@ def publish_temporary(source, target, expected_identity=None):
     _, _, _, con, file, _ = _modules()
     published = False
     try:
-        with guarded_path(target) as (target, parent):
+        with guarded_path(target, writable_parent=True) as (target, parent):
             _check_owned(parent)
             source = _safe_path(source)
             if source.parent != target.parent:
@@ -355,8 +394,15 @@ def publish_temporary(source, target, expected_identity=None):
                 _check_owned(handle, private=True)
                 if expected_identity is not None and owned_identity(target) != expected_identity:
                     raise ValueError("The original file changed before publication")
+                # SetFileInformationByHandle's current implementation converts
+                # the name via RtlDosPathNameToNtPathName and passes RootDirectory
+                # through unchanged: a non-NULL RootDirectory with a relative
+                # FileName is rejected with WinError 87. The supported form is a
+                # fully qualified FileName with a NULL RootDirectory. The parent
+                # handles pinned by guarded_path are still held for the whole
+                # transaction, so the parent cannot be renamed underneath us.
                 _call(file.SetFileInformationByHandle, handle, file.FileRenameInfo,
-                      {"ReplaceIfExists": True, "RootDirectory": parent, "FileName": target.name})
+                      {"ReplaceIfExists": True, "RootDirectory": None, "FileName": str(target)})
                 published = True
             finally:
                 _close_handle(handle)
@@ -385,7 +431,7 @@ def sync_directory(path):
 def file_lock(path):
     """Lock a byte of a stable sidecar across processes, retaining its handle."""
     msvcrt, pywintypes, _, con, file, _ = _modules()
-    with guarded_path(path, create_parents=True) as (path, parent):
+    with guarded_path(path, create_parents=True, writable_parent=True) as (path, parent):
         _check_owned(parent)
         descriptor = open_regular(path, writable=True, create=True, private=True, deny_delete=True)
         handle = msvcrt.get_osfhandle(descriptor)

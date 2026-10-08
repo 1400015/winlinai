@@ -217,8 +217,8 @@ GTK is not required for Qt. `--ui auto` also selects Qt on native Windows. Run t
 
 ```bash
 # Clone the repository
-git clone https://github.com/1400015/linux_ai.git
-cd linux_ai
+git clone https://github.com/1400015/winlinai.git
+cd winlinai
 
 # Make scripts executable
 chmod +x scripts/*.sh
@@ -242,8 +242,8 @@ This installs root-owned helpers and application-specific authentication prompts
 
 ```bash
 # Clone the repository
-git clone https://github.com/1400015/linux_ai.git
-cd linux_ai
+git clone https://github.com/1400015/winlinai.git
+cd winlinai
 
 # Create virtual environment
 python3 -m venv --system-site-packages venv
@@ -268,8 +268,8 @@ python -m src.app
 
 ```bash
 # Install dependencies with xbps
-git clone https://github.com/1400015/linux_ai.git
-cd linux_ai
+git clone https://github.com/1400015/winlinai.git
+cd winlinai
 
 # Install system dependencies
 sudo xbps-install -Su

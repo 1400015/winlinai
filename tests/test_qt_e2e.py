@@ -7,6 +7,7 @@ They require PySide6 and run with QT_QPA_PLATFORM=offscreen on CI.
 """
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -36,15 +37,16 @@ class TestQtE2EBase(unittest.TestCase):
         self.config = self._make_config()
 
     def _make_config(self):
-        """Create a mock config manager."""
+        """Create a fake config manager with persistent get/set state."""
         config = Mock()
-        config.get = Mock(side_effect=lambda key, default=None: {
+        values = {
             "app.expert_mode": False,
             "app.tray_toggle_on_click": True,
             "ui.theme": "dark",
             "features.expert_mode": True,
-        }.get(key, default))
-        config.set = Mock()
+        }
+        config.get = Mock(side_effect=lambda key, default=None: values.get(key, default))
+        config.set = Mock(side_effect=lambda key, value: values.__setitem__(key, value))
         config.get_api_key = Mock(return_value=None)
         config.api_key_env_var = Mock(return_value="TEST_KEY")
         config.get_api_key_env_override = Mock(return_value=None)
@@ -430,6 +432,61 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
         self.assertIn("not allowed", chat.log.toPlainText())
 
 
+class TestQtFileDialogButtons(TestQtE2EBase):
+    """The confirmation dialog's buttons conclude the dialog (no patching)."""
+
+    def _make_dialog(self):
+        from src.qt_file_dialogs import confirm_file_write_qt, QT_AVAILABLE
+        if not QT_AVAILABLE:
+            self.skipTest('PySide6 required for dialog tests')
+        return confirm_file_write_qt
+
+    def test_write_button_accepts_and_cancel_button_rejects(self):
+        """A click on Write accepts; a click on Cancel rejects.
+
+        Runs against the real dialog: the function is not patched, only
+        exec() is replaced so the modal loop does not block the test.
+        """
+        from unittest.mock import patch
+        from PySide6 import QtWidgets
+        confirm = self._make_dialog()
+
+        def newest_confirmation_dialog():
+            dialogs = [widget for widget in QtWidgets.QApplication.topLevelWidgets()
+                       if isinstance(widget, QtWidgets.QDialog)]
+            self.assertTrue(dialogs)
+            return dialogs[-1]
+
+        def fake_exec():
+            # exec() is mocked so the modal loop does not block the test;
+            # the real dialog and its buttons are exercised.
+            self_dialog = newest_confirmation_dialog()
+            box = self_dialog.findChild(QtWidgets.QDialogButtonBox)
+            self.assertIsNotNone(box)
+            buttons = box.buttons()
+            self.assertEqual(len(buttons), 2)
+            # Click Write (AcceptRole) -> the dialog must accept.
+            write_button = next(b for b in buttons
+                                if box.buttonRole(b) == QtWidgets.QDialogButtonBox.AcceptRole)
+            write_button.click()
+            return self_dialog.result()
+
+        with patch.object(QtWidgets.QDialog, 'exec', side_effect=fake_exec):
+            self.assertTrue(confirm(None, '/tmp/x.py', 'content', is_new=True))
+
+        def fake_exec_reject():
+            self_dialog = newest_confirmation_dialog()
+            box = self_dialog.findChild(QtWidgets.QDialogButtonBox)
+            buttons = box.buttons()
+            cancel_button = next(b for b in buttons
+                                 if box.buttonRole(b) == QtWidgets.QDialogButtonBox.RejectRole)
+            cancel_button.click()
+            return self_dialog.result()
+
+        with patch.object(QtWidgets.QDialog, 'exec', side_effect=fake_exec_reject):
+            self.assertFalse(confirm(None, '/tmp/y.py', 'content', is_new=True))
+
+
 class TestQtUpdatesE2E(TestQtE2EBase):
     """E2E: Settings has an Updates section; startup check respects config."""
 
@@ -491,7 +548,8 @@ class TestQtUpdatesE2E(TestQtE2EBase):
             "app.check_updates": True,
         }.get(key, default))
         config.set = Mock()
-        fake_update = {"version": "9.9.9", "url": "https://github.com/1400015/winlinai/releases"}
+        fake_update = {"status": "available", "version": "9.9.9",
+                       "url": "https://github.com/1400015/winlinai/releases"}
         p_worker, p_start, p_timer, p_check = self._sync_worker_patches(fake_update)
         with p_worker, p_start, p_timer, p_check:
             _maybe_check_updates(config, shell=None)
@@ -499,6 +557,7 @@ class TestQtUpdatesE2E(TestQtE2EBase):
         config.set.assert_any_call("update.version", "9.9.9")
 
     def test_maybe_check_updates_quiet_when_none(self):
+        """None (legacy worker) stays silent and stores nothing."""
         from src.qt_app import _maybe_check_updates
         config = Mock()
         config.get = Mock(side_effect=lambda key, default=None: {
@@ -510,6 +569,21 @@ class TestQtUpdatesE2E(TestQtE2EBase):
             _maybe_check_updates(config, shell=None)
         config.set.assert_not_called()
 
+    def test_maybe_check_updates_failed_check_stores_nothing(self):
+        """A failed check is not an update and is not 'up to date'."""
+        from src.qt_app import _maybe_check_updates
+        config = Mock()
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "app.check_updates": True,
+        }.get(key, default))
+        config.set = Mock()
+        for status in ("failed", "current", "unsupported"):
+            p_worker, p_start, p_timer, p_check = self._sync_worker_patches(
+                {"status": status})
+            with p_worker, p_start, p_timer, p_check:
+                _maybe_check_updates(config, shell=None)
+        config.set.assert_not_called()
+
     def test_maybe_check_updates_notifies_shell(self):
         from src.qt_app import _maybe_check_updates
         config = Mock()
@@ -518,7 +592,7 @@ class TestQtUpdatesE2E(TestQtE2EBase):
         }.get(key, default))
         config.set = Mock()
         shell = Mock()
-        fake_update = {"version": "9.9.9", "url": "https://example.com"}
+        fake_update = {"status": "available", "version": "9.9.9", "url": "https://example.com"}
         p_worker, p_start, p_timer, p_check = self._sync_worker_patches(fake_update)
         with p_worker, p_start, p_timer, p_check:
             _maybe_check_updates(config, shell=shell)
@@ -546,6 +620,8 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
             chat.input.setText("hi")
             chat._on_send()
             chat._worker_thread.join(timeout=5)
+        # Deliver the worker's queued signals to the UI before asserting.
+        self.app.processEvents()
         self.assertIn("Hello from AI", chat.log.toPlainText())
 
     def test_provider_failure_falls_back_to_offline(self):
@@ -556,6 +632,8 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
             chat.input.setText("hello offline")
             chat._on_send()
             chat._worker_thread.join(timeout=5)
+        # Deliver the worker's queued signals to the UI before asserting.
+        self.app.processEvents()
         log_text = chat.log.toPlainText()
         self.assertIn(i18n._("(Provider unavailable, answered offline)"), log_text)
 
@@ -575,7 +653,185 @@ class TestQtProviderWorkerE2E(TestQtE2EBase):
             chat._on_send()
             chat._on_stop_clicked()
             chat._worker_thread.join(timeout=5)
+        # Deliver the worker's queued signals to the UI before asserting.
+        self.app.processEvents()
         self.assertIn(i18n._("Request cancelled."), chat.log.toPlainText())
+
+
+class TestQtSessionIsolation(TestQtE2EBase):
+    """A pending response must land in the conversation that originated it."""
+
+    def _make_chat_with_history(self, ai_client):
+        from src.qt_chat import QtChatWidget
+        from src.history_store import HistoryStore
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+        history_path = Path(self.temp_dir.name) / "history.json"
+        store = HistoryStore(str(history_path))
+        self.addCleanup(store.close)
+        system_utils = SystemUtils(self.config)
+        offline = OfflineAssistant(system_utils, self.config)
+        chat = QtChatWidget(self.config, offline, ai_client=ai_client, history_store=store)
+        self.addCleanup(chat.close)
+        return chat, store
+
+    def _messages(self, store, session_id):
+        return store.load_messages(session_id)
+
+    def test_answer_lands_in_originating_session_after_switch(self):
+        ai_client = Mock()
+        release = threading.Event()
+
+        def slow_chat(messages, images=None, cancel_event=None):
+            release.wait(timeout=5)
+            return "answer to session A"
+
+        ai_client.chat.side_effect = slow_chat
+        chat, store = self._make_chat_with_history(ai_client)
+        session_a = store.active_session_id
+        store.create_session(select=True)
+        session_b = store.active_session_id
+        chat.load_session(session_b)
+        with patch("src.qt_chat.should_use_provider", return_value=True):
+            chat._request_session_id = session_a  # simulate the send that started in A
+            chat._pending_messages.append({"role": "user", "content": "question for A"})
+            release.set()
+            chat._on_provider_response("answer to session A")
+        self.app.processEvents()
+        # The answer is stored in A, the session that originated the request.
+        stored_a = [m for m in self._messages(store, session_a) if m["role"] == "assistant"]
+        self.assertEqual(len(stored_a), 1)
+        self.assertEqual(stored_a[0]["content"], "answer to session A")
+        # Session B, the currently shown one, received nothing.
+        stored_b = [m for m in self._messages(store, session_b) if m["role"] == "assistant"]
+        self.assertEqual(stored_b, [])
+        # The visible log is session B's; the answer is not shown there.
+        self.assertNotIn("answer to session A", chat.log.toPlainText())
+
+    def test_session_switch_refused_while_request_in_flight(self):
+        ai_client = Mock()
+        chat, store = self._make_chat_with_history(ai_client)
+        # Simulate a request in flight with a thread that stays alive.
+        release = threading.Event()
+
+        def busy():
+            release.wait(timeout=5)
+
+        chat._worker_thread = threading.Thread(target=busy)
+        chat._worker_thread.start()
+        self.addCleanup(release.set)
+        self.addCleanup(chat._worker_thread.join)
+        active = store.active_session_id
+        created = store.create_session(select=False)
+        other = created["id"]
+        self.assertNotEqual(other, active)
+        chat.load_session(other)
+        self.assertEqual(store.active_session_id, active)
+        self.assertIn(i18n._("Wait for the pending answer before switching conversations."),
+                      chat.log.toPlainText())
+        chat.clear_conversation()
+        self.assertEqual(store.active_session_id, active)
+
+    def test_archive_or_delete_of_origin_session_does_not_write_to_survivor(self):
+        ai_client = Mock()
+        chat, store = self._make_chat_with_history(ai_client)
+        session_a = store.active_session_id
+        store.create_session(select=True)
+        session_b = store.active_session_id
+        # The request originated in A; A was deleted while it was pending.
+        store.delete_session(session_a)
+        chat._request_session_id = session_a
+        chat._on_provider_response("late answer")
+        self.app.processEvents()
+        # Nothing was written to B, the session that stayed active.
+        stored_b = [m for m in self._messages(store, session_b) if m["role"] == "assistant"]
+        self.assertEqual(stored_b, [])
+        # The pending state was cleared.
+        self.assertIsNone(chat._request_session_id)
+
+    def test_cancelled_request_stores_no_answer(self):
+        ai_client = Mock()
+        chat, store = self._make_chat_with_history(ai_client)
+        session_a = store.active_session_id
+        chat._request_session_id = session_a
+        chat._on_provider_cancelled("long question")
+        self.app.processEvents()
+        stored = [m for m in self._messages(store, session_a) if m["role"] == "assistant"]
+        self.assertEqual(stored, [])
+
+    def test_history_dialog_new_refused_while_request_in_flight(self):
+        """New must not create a session while a request is pending.
+
+        The dialog is wired exactly like QtShell.open_history_dialog: the
+        shell (parent) owns the chat, and the worker thread is alive. The
+        pending state comes from a real send, not from an injected
+        _request_session_id.
+        """
+        from src.qt_app import QtShell
+        from src.qt_dialogs import QtHistoryDialog
+
+        history_path = Path(self.temp_dir.name) / "history.json"
+        shell = QtShell(self.config, "windows", history_path=str(history_path))
+        self.addCleanup(shell.close)
+        chat = shell.chat
+        store = shell.history_store
+        self.assertIsNotNone(chat)
+        self.assertIsNotNone(store)
+        # A real pending request: patch the provider path so the worker
+        # stays alive until this test releases it.
+        release = threading.Event()
+
+        def slow_chat(messages, images=None, cancel_event=None):
+            release.wait(timeout=5)
+            return "late answer"
+
+        ai_client = Mock()
+        ai_client.chat.side_effect = slow_chat
+        chat.ai_client = ai_client
+        with patch("src.qt_chat.should_use_provider", return_value=True):
+            chat.input.setText("pending question")
+            chat._on_send()
+            self.addCleanup(release.set)
+            self.addCleanup(chat._worker_thread.join)
+            self.assertTrue(chat.request_in_flight())
+            active_before = store.active_session_id
+            sessions_before = len(store.list_sessions())
+            dialog = QtHistoryDialog(store, shell,
+                                     on_open=lambda _id: None,
+                                     on_new=lambda _id: None)
+            self.addCleanup(dialog.deleteLater)
+            # The refusal shows a modal box; keep the test non-interactive.
+            with patch("PySide6.QtWidgets.QMessageBox.information"):
+                dialog._new()
+            self.assertEqual(store.active_session_id, active_before)
+            self.assertEqual(len(store.list_sessions()), sessions_before)
+
+    def test_offline_answer_follows_the_same_contract(self):
+        from src.qt_chat import QtChatWidget
+        from src.history_store import HistoryStore
+        from src.offline_assistant import OfflineAssistant
+        from src.system_utils import SystemUtils
+        history_path = Path(self.temp_dir.name) / "history.json"
+        store = HistoryStore(str(history_path))
+        self.addCleanup(store.close)
+        system_utils = SystemUtils(self.config)
+        offline = OfflineAssistant(system_utils, self.config)
+        chat = QtChatWidget(self.config, offline, ai_client=Mock(), history_store=store)
+        self.addCleanup(chat.close)
+        session_a = store.active_session_id
+        store.create_session(select=True)
+        session_b = store.active_session_id
+        chat.load_session(session_b)
+        with patch("src.qt_chat.should_use_provider", return_value=False), \
+                patch("src.qt_chat.offline_reply_text", return_value="offline answer"):
+            chat._request_session_id = session_a
+            chat._send_to_offline("question for A")
+        self.app.processEvents()
+        stored_a = [m for m in self._messages(store, session_a) if m["role"] == "assistant"]
+        self.assertEqual(len(stored_a), 1)
+        self.assertEqual(stored_a[0]["content"], "offline answer")
+        stored_b = [m for m in self._messages(store, session_b) if m["role"] == "assistant"]
+        self.assertEqual(stored_b, [])
 
 
 if __name__ == "__main__":

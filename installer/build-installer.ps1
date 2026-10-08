@@ -30,8 +30,9 @@ Write-Host "=== WinLinAI Installer Build ===" -ForegroundColor Cyan
 Write-Host "Project: $ProjectDir"
 Write-Host "Output:  $OutputDir"
 
-# Clean previous builds
-if ($Clean -or (Test-Path $DistDir) -or (Test-Path $BuildDir)) {
+# Clean previous builds only when -Clean is given: a plain dist/ or
+# build/ must not be destroyed, because -SkipExe reuses dist\winlinai.
+if ($Clean) {
     Write-Host "`nCleaning previous builds..." -ForegroundColor Yellow
     Remove-Item -Path $DistDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $BuildDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -73,6 +74,11 @@ if (-not $SkipExe) {
     Write-Host "Executable built: $ExeDir" -ForegroundColor Green
 } else {
     Write-Host "`n=== Skipping executable build (using existing) ===" -ForegroundColor Yellow
+    $existingExe = Join-Path $ExeDir "winlinai.exe"
+    if (-not (Test-Path $existingExe)) {
+        Write-Error "-SkipExe requires $existingExe (run without -SkipExe or with -Clean first)"
+        exit 1
+    }
 }
 
 # Step 2: Download Visual C++ Redistributable (optional)
@@ -114,8 +120,18 @@ if (-not $iscc) {
     exit 1
 }
 
+# Single source of truth: read __version__ from src/_version.py.
+$versionFile = Join-Path $ProjectDir "src" "_version.py"
+$versionContent = Get-Content $versionFile -Raw
+if ($versionContent -notmatch ('__version__' + [char]92 + 's*=' + [char]92 + 's*.([0-9][0-9A-Za-z.+-]*).*')) {
+    Write-Error "Could not read __version__ from $versionFile"
+    exit 1
+}
+$AppVersion = $Matches[1]
+Write-Host "Building installer for version: $AppVersion"
+
 $issFile = Join-Path $InstallerDir "winlinai.iss"
-& $iscc $issFile
+& $iscc "/DMyAppVersion=$AppVersion" $issFile
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Inno Setup build failed"

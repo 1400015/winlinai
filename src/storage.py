@@ -43,7 +43,10 @@ def sync_directory(path):
 def _guard_write(path):
     if _WINDOWS:
         from .platform.windows_files import guarded_path
-        with guarded_path(path, create_parents=True):
+        # The transaction publishes by renaming a fully qualified name, which
+        # needs write/delete access to the immediate parent directory; a
+        # read-only shared pin would block the publication rename (WinError 32).
+        with guarded_path(path, create_parents=True, writable_parent=True):
             yield
     else:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -36,13 +36,22 @@ def wrap_cmdlet_json(cmdlet_argv):
         → powershell -EncodedCommand <base64 of
           "Get-Service -Name 'wuauserv' | ConvertTo-Json -Compress -Depth 10">
     """
+    import re as _re
     from .shell_pwsh import launch_script
 
     if not cmdlet_argv:
         raise ValueError("empty cmdlet argv")
-    # Quote single-argument values to survive the PowerShell parser.
-    parts = []
-    for arg in cmdlet_argv:
+    # argv[0] is the cmdlet name: it must stay bare, because 'Get-Service'
+    # would be a string literal in the pipeline, not a cmdlet invocation.
+    # The same conservative name pattern shell_pwsh uses keeps injection
+    # tokens out; anything else raises instead of emitting a script.
+    cmdlet_name = cmdlet_argv[0]
+    if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}$", cmdlet_name):
+        raise ValueError("invalid cmdlet name: {!r}".format(cmdlet_name))
+    # Parameter names stay bare; values are single-quoted to survive the
+    # PowerShell parser, with interior quotes doubled (it's -> 'it''s').
+    parts = [cmdlet_name]
+    for arg in cmdlet_argv[1:]:
         if arg.startswith("-"):
             parts.append(arg)
         else:

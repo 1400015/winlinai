@@ -23,14 +23,44 @@ THEMES_DIR = Path(__file__).resolve().parents[1] / "themes"
 DEFAULT_THEME = "dark"
 
 
+def _theme_directories() -> List[Path]:
+    """Theme folders in resolution order: source, frozen, installed share.
+
+    The source tree location serves a checkout; sys._MEIPASS/themes serves
+    a PyInstaller bundle (the spec already copies themes/ into it); and
+    sys.prefix/share/linux-ai-assistant/themes serves a wheel install (the
+    same data location config_manager already reads).
+    """
+    import sys
+    directories = [THEMES_DIR]
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        directories.append(Path(bundle_root) / "themes")
+    directories.append(Path(sys.prefix) / "share" / "linux-ai-assistant" / "themes")
+    return [directory for directory in directories if directory.is_dir()]
+
+
+def _find_theme_file(name: str) -> Optional[Path]:
+    for directory in _theme_directories():
+        candidate = directory / "{}.json".format(name)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def available_themes() -> List[str]:
-    """List available theme names (without .json extension)."""
-    if not THEMES_DIR.is_dir():
-        return [DEFAULT_THEME]
-    return sorted(
-        path.stem for path in THEMES_DIR.glob("*.json")
-        if path.is_file()
-    )
+    """List available theme names (without .json extension).
+
+    Every theme folder is consulted; with dark.json, light.json,
+    dracula.json and solarized-dark.json bundled, all four names appear,
+    in a wheel or a frozen bundle, not just the fallback 'dark'.
+    """
+    names = {DEFAULT_THEME}
+    for directory in _theme_directories():
+        for path in directory.glob("*.json"):
+            if path.is_file():
+                names.add(path.stem)
+    return sorted(names)
 
 
 def load_theme(name: Optional[str] = None) -> Dict:
@@ -40,11 +70,11 @@ def load_theme(name: Optional[str] = None) -> Dict:
     """
     if not name:
         name = DEFAULT_THEME
-    path = THEMES_DIR / f"{name}.json"
-    if not path.is_file():
+    path = _find_theme_file(name)
+    if path is None:
         # Try default
-        path = THEMES_DIR / f"{DEFAULT_THEME}.json"
-    if not path.is_file():
+        path = _find_theme_file(DEFAULT_THEME)
+    if path is None:
         # Return a minimal dark theme
         return _minimal_dark_theme()
     try:

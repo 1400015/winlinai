@@ -47,6 +47,46 @@ def append_is_bounded(log_chars, chunk):
     return log_chars + len(chunk) <= MAX_LOG_CHARS
 
 
+MAX_CONTEXT_MESSAGES = 20
+MAX_CONTEXT_CHARS = 12000
+
+
+def apply_context_budget(messages, max_messages, max_chars):
+    """Return a truncated copy of the request messages within the budget.
+
+    Same contract as the GTK track (_build_request_messages): keep the
+    last max_messages, then drop the oldest while the character total
+    exceeds max_chars, always keeping at least the newest message. The
+    system message provider_reply_text prepends is not part of this
+    count. The input list is never modified.
+    """
+    bounded = [dict(message) for message in messages
+               if message.get("role") in ("user", "assistant") and message.get("content")]
+    if len(bounded) > max_messages:
+        bounded = bounded[-max_messages:]
+    total = sum(len(message["content"]) for message in bounded)
+    while len(bounded) > 1 and total > max_chars:
+        removed = bounded.pop(0)
+        total -= len(removed["content"])
+    return bounded
+
+
+def request_budget(config_manager):
+    """Read the configured context budget with GTK-safe_number semantics.
+
+    Out-of-range or invalid values fall back to the defaults; there are no
+    clamps (1 and 501 both mean the default, like theme_utils.safe_number).
+    """
+    from .theme_utils import safe_number
+    max_messages = safe_number(
+        config_manager.get("context.max_messages"), MAX_CONTEXT_MESSAGES,
+        int, minimum=2, maximum=500)
+    max_chars = safe_number(
+        config_manager.get("context.max_chars"), MAX_CONTEXT_CHARS,
+        int, minimum=1000, maximum=400000)
+    return max_messages, max_chars
+
+
 def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel_event=None,
                         expert=False, distro=None, query="", context=None):
     """Pure send path: call the AI provider and return its answer.
@@ -74,21 +114,21 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel
             expert=expert, distro=distro, query=query, lang=lang, context=context)
         full_messages = [system_message] + list(messages)
 
-        # Prepare images if provided
+        # image_paths are already-prepared ImageAttachment objects (prepared
+        # and validated on the UI thread before this worker started). Validate
+        # the immutable snapshot once more; on any failure the request is
+        # refused - it is never sent without the image the user attached.
         images: Optional[list] = None
         if image_paths:
-            try:
-                from .image_attachments import validate_attachment
-                images = []
-                for path in image_paths:
-                    attachment = validate_attachment(path)
-                    if attachment:
-                        images.append(attachment)
-                if not images:
-                    images = None
-            except Exception as error:
-                logger.warning("Image validation failed: %s", type(error).__name__)
-                images = None
+            from .image_attachments import ImageAttachmentError, validate_attachment
+            validated = []
+            for attachment in image_paths:
+                try:
+                    validate_attachment(attachment)
+                except ImageAttachmentError as error:
+                    return None, "image:{}".format(error)
+                validated.append(attachment)
+            images = validated
 
         response = ai_client.chat(full_messages, images=images, cancel_event=cancel_event)
         if response:
@@ -120,11 +160,16 @@ def should_use_provider(ai_client, config_manager):
                     return True
             except Exception:
                 pass
-        # Check local LLM
+        # A local LLM counts only when it is the configured active provider;
+        # the default base_url with zero keys and no active selection must
+        # not present a provider as ready (the chat would dispatch to a
+        # worker that cannot answer).
         try:
-            base_url = config_manager.get("api.providers.local_llm.base_url")
-            if base_url:
-                return True
+            provider = config_manager.get("api.provider")
+            if provider == "local_llm":
+                base_url = config_manager.get("api.providers.local_llm.base_url")
+                if base_url:
+                    return True
         except Exception:
             pass
     except Exception:
@@ -145,6 +190,7 @@ if QT_AVAILABLE:
         finished = QtCore.Signal(str)      # (text)
         failed = QtCore.Signal(str)        # (last_user_message) -> offline fallback
         cancelled = QtCore.Signal(str)     # (last_user_message)
+        image_failed = QtCore.Signal(str)  # (message) -> visible image refusal
 
         def run(self, ai_client, messages, lang, image_paths, cancel_event,
                 expert=False, distro=None, query="", context=None):
@@ -154,6 +200,8 @@ if QT_AVAILABLE:
                 expert=expert, distro=distro, query=query, context=context)
             if error == "cancelled":
                 self.cancelled.emit(messages[-1]["content"] if messages else "")
+            elif error and error.startswith("image:"):
+                self.image_failed.emit(error[len("image:"):])
             elif error:
                 self.failed.emit(messages[-1]["content"] if messages else "")
             else:
@@ -192,6 +240,11 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         self._cancel_event = threading.Event()
         self._worker = None
         self._worker_thread = None
+        # In-flight request isolation: the session that originated the request
+        # and a request id. Responses are always stored in the originating
+        # session, even if the user switches, archives or deletes meanwhile.
+        self._request_session_id = None
+        self._request_serial = 0
         self._build()
         if self.send_requested is not None:
             self.send_requested.connect(self._on_send)
@@ -400,6 +453,10 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
 
         # Track message for provider context
         self._pending_messages.append({"role": "user", "content": text or "[image]"})
+        # Capture the originating session and a request id before dispatching.
+        # Every path that stores the answer must honour this pair.
+        self._request_serial += 1
+        self._request_session_id = self._current_session_id()
 
         # Show thinking indicator
         self._show_thinking()
@@ -446,15 +503,29 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         answer = offline_reply_text(self.offline, text, lang) or ""
         self._hide_thinking()
-        self.append_message(i18n._("AI"), answer)
+        self._store_response(answer)
         self._pending_messages.append({"role": "assistant", "content": answer})
-        if self.history_store is not None:
-            try:
-                self.history_store.append("assistant", answer)
-            except Exception as error:
-                logger.warning("History write failed: %s", type(error).__name__)
+        self._finish_request()
+        self.append_message(i18n._("AI"), answer)
         if self.response_received is not None:
             self.response_received.emit(answer)
+
+    @staticmethod
+    def _prepare_attachment(path):
+        """Prepare one attached image on the calling (UI) thread.
+
+        Links are refused before any read (O_NOFOLLOW is POSIX-only; on
+        Windows a junction needs the explicit check), the file is read once
+        through prepare_image's O_NOFOLLOW open and normalized, and the
+        immutable snapshot is validated before it can join a request.
+        """
+        from .windows_file_actions import _path_or_ancestor_is_link
+        from .image_attachments import ImageAttachmentError, prepare_image, validate_attachment
+        if _path_or_ancestor_is_link(path):
+            raise ImageAttachmentError("Refusing to attach an image through a link")
+        attachment = prepare_image(path)
+        validate_attachment(attachment)
+        return attachment
 
     def _send_to_provider(self):
         """Send to the AI provider via a signal-based worker (no invokeMethod).
@@ -467,16 +538,43 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         from . import i18n
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         # Immutable snapshot: the worker reads this, the main thread keeps
-        # appending to self._pending_messages for the next turn.
-        messages = list(self._pending_messages)
-        # Capture attachment paths (they are cleared after send)
-        attachment_paths = [a["path"] for a in self._attachments]
+        # appending to self._pending_messages for the next turn. The request
+        # is bounded by the configured context budget; the pending list, the
+        # visible log and the history store stay complete, and the budget is
+        # re-read on every turn.
+        try:
+            max_messages, max_chars = request_budget(self.config)
+        except Exception:
+            max_messages, max_chars = MAX_CONTEXT_MESSAGES, MAX_CONTEXT_CHARS
+        messages = apply_context_budget(self._pending_messages, max_messages, max_chars)
+        # Prepare attachments on the UI thread, before the worker starts: a
+        # preparation failure must be visible and must not let the request
+        # continue as if the image had been sent. The worker receives ready
+        # ImageAttachment objects, never paths.
+        attachments = None
+        if self._attachments:
+            from .image_attachments import ImageAttachmentError
+            prepared = []
+            failure = None
+            for attachment in self._attachments:
+                try:
+                    prepared.append(self._prepare_attachment(attachment["path"]))
+                except ImageAttachmentError as error:
+                    failure = str(error)
+                    break
+            if failure is not None:
+                self._hide_thinking()
+                from . import i18n
+                self.append_message(i18n._("System"), failure)
+                return
+            attachments = prepared or None
 
         self._cancel_event.clear()
         self._worker = _ProviderWorker()
         self._worker.finished.connect(self._on_provider_response)
         self._worker.failed.connect(self._on_provider_failed)
         self._worker.cancelled.connect(self._on_provider_cancelled)
+        self._worker.image_failed.connect(self._on_provider_image_failed)
         # Capture context for the system message (parity with GTK track)
         try:
             expert = bool(self.config.get("app.expert_mode", False))
@@ -492,7 +590,7 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         self._worker_thread = threading.Thread(
             target=self._worker.run,
             args=(self.ai_client, messages, lang,
-                  attachment_paths if attachment_paths else None,
+                  attachments,
                   self._cancel_event),
             kwargs={"expert": expert, "distro": distro,
                     "query": query, "context": context},
@@ -506,17 +604,17 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         """Handle provider response (delivered by the worker's finished signal)."""
         from . import i18n
         self._hide_thinking()
-        self.append_message(i18n._("AI"), text)
-        self._pending_messages.append({"role": "assistant", "content": text})
-        if self.history_store is not None:
-            try:
-                self.history_store.append("assistant", text)
-            except Exception as error:
-                logger.warning("History write failed: %s", type(error).__name__)
-        if self.response_received is not None:
-            self.response_received.emit(text)
-        # Offer to write any ``` file blocks in the reply (expert mode only)
-        self._offer_file_blocks(text)
+        # The answer is stored in the session that originated the request;
+        # the visible log only advances when that session is still shown.
+        self._store_response(text)
+        if self._request_session_is_selected():
+            self._pending_messages.append({"role": "assistant", "content": text})
+            self.append_message(i18n._("AI"), text)
+            if self.response_received is not None:
+                self.response_received.emit(text)
+            # Offer to write any ``` file blocks in the reply (expert mode only)
+            self._offer_file_blocks(text)
+        self._finish_request()
 
     @_Slot(str)
     def _on_provider_failed(self, last_user_message):
@@ -525,22 +623,97 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         answer = offline_reply_text(self.offline, last_user_message, lang) or ""
         self._hide_thinking()
-        self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
-        self._pending_messages.append({"role": "assistant", "content": answer})
-        if self.history_store is not None:
-            try:
-                self.history_store.append("assistant", answer)
-            except Exception as error:
-                logger.warning("History write failed: %s", type(error).__name__)
+        self._store_response(answer)
+        if self._request_session_is_selected():
+            self._pending_messages.append({"role": "assistant", "content": answer})
+            self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
+        self._finish_request()
+
+    @_Slot(str)
+    def _on_provider_image_failed(self, message):
+        """The prepared image did not survive validation: refuse visibly."""
+        from . import i18n
+        self._hide_thinking()
+        self.append_message(i18n._("System"), message)
+        self._finish_request()
 
     @_Slot(str)
     def _on_provider_cancelled(self, last_user_message):
         """User cancelled the in-flight provider request."""
         from . import i18n
         self._hide_thinking()
-        self.append_message(i18n._("System"), i18n._("Request cancelled."))
-        self._pending_messages.append(
-            {"role": "system", "content": "Request cancelled by user."})
+        # A cancelled request stores no answer in any session.
+        if self._request_session_is_selected():
+            self.append_message(i18n._("System"), i18n._("Request cancelled."))
+            self._pending_messages.append(
+                {"role": "system", "content": "Request cancelled by user."})
+        self._finish_request()
+
+    def _current_session_id(self):
+        """The history session that a send right now belongs to."""
+        if self.history_store is None:
+            return None
+        try:
+            # HistoryStore.active_session_id is a property.
+            return self.history_store.active_session_id
+        except Exception:
+            return None
+
+    def _store_response(self, answer):
+        """Store an assistant answer in the session that originated the request.
+
+        The captured session id is used explicitly: even if the user switched,
+        archived or deleted the conversation meanwhile, the answer lands in
+        the conversation that asked the question, or nowhere when that
+        conversation no longer exists.
+        """
+        session_id = self._request_session_id
+        if self.history_store is None or session_id is None:
+            return
+        try:
+            sessions = self.history_store.list_sessions(include_archived=True)
+        except Exception as error:
+            logger.warning("History read failed: %s", type(error).__name__)
+            return
+        if not any(session["id"] == session_id for session in sessions):
+            # The originating session disappeared; drop the pending state and
+            # let the visible line below explain where the answer went.
+            self._request_session_id = None
+            return
+        try:
+            self.history_store.append("assistant", answer, session_id=session_id)
+        except Exception as error:
+            logger.warning("History write failed: %s", type(error).__name__)
+
+    def _request_session_is_selected(self):
+        """True when the originating session is still the one being shown.
+
+        Without a history store there is nothing to switch to: the request
+        belongs to the single implicit conversation being shown.
+        """
+        if self.history_store is None:
+            return True
+        return (self._request_session_id is not None
+                and self._request_session_id == self._current_session_id())
+
+    def _finish_request(self):
+        """Clear the in-flight request state after a response settles."""
+        self._request_session_id = None
+
+    def request_in_flight(self):
+        """True while a provider request is pending (Stop button active)."""
+        return self._worker_thread is not None and self._worker_thread.is_alive()
+
+    def _session_action_allowed(self):
+        """New/Open/Archive/Delete are refused while a request is in flight.
+
+        Chosen contract: the actions are refused instead of queued, and the
+        refusal is visible, so the answer always lands in the conversation
+        that originated it and no background write can race a session
+        switch. The guard is advisory for callers (menus/dialogs); the
+        store itself still routes by captured session id.
+        """
+        return not self.request_in_flight()
 
     def _expert_mode_enabled(self):
         try:
@@ -605,6 +778,12 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         """Render the active (or given) session's stored messages."""
         if self.history_store is None:
             return
+        if not self._session_action_allowed():
+            from . import i18n
+            self.append_message(
+                i18n._("System"),
+                i18n._("Wait for the pending answer before switching conversations."))
+            return
         try:
             entries = self.history_store.load_messages(session_id)
         except Exception as error:
@@ -642,6 +821,12 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
 
     def clear_conversation(self):
         """Clear the current conversation (new session)."""
+        if not self._session_action_allowed():
+            from . import i18n
+            self.append_message(
+                i18n._("System"),
+                i18n._("Wait for the pending answer before starting a new conversation."))
+            return
         if self.history_store is not None:
             try:
                 self.history_store.create_session(select=True)

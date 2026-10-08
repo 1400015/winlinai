@@ -159,3 +159,65 @@ class TestMinimalDarkTheme(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestThemeResolution(unittest.TestCase):
+    """Theme folders resolve beyond the source tree: wheel and bundle."""
+
+    def _write_themes(self, directory, names):
+        import json
+        for name in names:
+            payload = {
+                "name": name.capitalize(),
+                "colors": {"background": "#{}{}".format(name[:1] * 3, "00000")},
+                "ui": {},
+            }
+            (directory / "{}.json".format(name)).write_text(
+                json.dumps(payload), encoding="utf-8")
+
+    def test_available_and_load_from_resolved_directory(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from src import qt_theme
+        directory = Path(tempfile.mkdtemp())
+        self._write_themes(directory, ["dark", "light"])
+        with patch.object(qt_theme, "_theme_directories",
+                          return_value=[directory]):
+            names = qt_theme.available_themes()
+            self.assertIn("dark", names)
+            self.assertIn("light", names)
+            self.assertEqual(len(names), 2)
+            light = qt_theme.load_theme("light")
+            self.assertEqual(light["name"], "Light")
+            self.assertIn("background", light["colors"])
+            # Not the minimal dark fallback.
+            self.assertNotEqual(light["name"], "Minimal Dark")
+
+    def test_resolution_order_prefers_earlier_directory(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from src import qt_theme
+        first = Path(tempfile.mkdtemp())
+        second = Path(tempfile.mkdtemp())
+        self._write_themes(first, ["dark", "light"])
+        self._write_themes(second, ["dracula"])
+        with patch.object(qt_theme, "_theme_directories",
+                          return_value=[first, second]):
+            names = qt_theme.available_themes()
+            self.assertEqual(sorted(names), ["dark", "dracula", "light"])
+            light = qt_theme.load_theme("light")
+            self.assertEqual(light["name"], "Light")
+
+    def test_missing_theme_falls_back_to_default_then_minimal(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from src import qt_theme
+        directory = Path(tempfile.mkdtemp())
+        self._write_themes(directory, ["dark"])
+        with patch.object(qt_theme, "_theme_directories",
+                          return_value=[directory]):
+            theme = qt_theme.load_theme("nonexistent")
+            self.assertEqual(theme["name"], "Dark")

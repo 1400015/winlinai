@@ -116,16 +116,20 @@ class TestIsWindowsInstallerAsset(unittest.TestCase):
 
 
 class TestCheckForUpdates(unittest.TestCase):
-    def test_not_windows_returns_none(self):
+    def test_not_windows_returns_unsupported(self):
+        """Off Windows no check happens: neither failed nor 'up to date'."""
         with patch('src.updater.is_windows', return_value=False):
-            self.assertIsNone(check_for_updates())
+            result = check_for_updates()
+        self.assertEqual(result["status"], "unsupported")
 
-    def test_api_failure_returns_none(self):
+    def test_api_failure_returns_failed(self):
+        """A network failure is 'failed', never 'current'."""
         with patch('src.updater.is_windows', return_value=True):
             with patch('urllib.request.urlopen', side_effect=Exception("network error")):
-                self.assertIsNone(check_for_updates())
+                result = check_for_updates()
+        self.assertEqual(result["status"], "failed")
 
-    def test_same_version_returns_none(self):
+    def test_same_version_returns_current(self):
         with patch('src.updater.is_windows', return_value=True):
             with patch('src.updater.get_current_version', return_value="1.5.0"):
                 mock_response = Mock()
@@ -133,7 +137,46 @@ class TestCheckForUpdates(unittest.TestCase):
                 mock_response.__enter__ = Mock(return_value=mock_response)
                 mock_response.__exit__ = Mock(return_value=False)
                 with patch('urllib.request.urlopen', return_value=mock_response):
-                    self.assertIsNone(check_for_updates())
+                    result = check_for_updates()
+        self.assertEqual(result["status"], "current")
+        self.assertEqual(result["version"], "1.5.0")
+
+    def test_newer_version_returns_available(self):
+        with patch('src.updater.is_windows', return_value=True):
+            with patch('src.updater.get_current_version', return_value="1.4.2"):
+                mock_response = Mock()
+                mock_response.read.return_value = (
+                    b'{"tag_name": "v1.5.0", "html_url": "https://example.com/r",'
+                    b' "assets": []}')
+                mock_response.__enter__ = Mock(return_value=mock_response)
+                mock_response.__exit__ = Mock(return_value=False)
+                with patch('urllib.request.urlopen', return_value=mock_response):
+                    result = check_for_updates()
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["version"], "1.5.0")
+        self.assertEqual(result["url"], "https://example.com/r")
+
+    def test_empty_tag_returns_failed(self):
+        with patch('src.updater.is_windows', return_value=True):
+            with patch('src.updater.get_current_version', return_value="1.4.2"):
+                mock_response = Mock()
+                mock_response.read.return_value = b'{"tag_name": ""}'
+                mock_response.__enter__ = Mock(return_value=mock_response)
+                mock_response.__exit__ = Mock(return_value=False)
+                with patch('urllib.request.urlopen', return_value=mock_response):
+                    result = check_for_updates()
+        self.assertEqual(result["status"], "failed")
+
+    def test_bad_json_returns_failed(self):
+        with patch('src.updater.is_windows', return_value=True):
+            with patch('src.updater.get_current_version', return_value="1.4.2"):
+                mock_response = Mock()
+                mock_response.read.return_value = b'not json'
+                mock_response.__enter__ = Mock(return_value=mock_response)
+                mock_response.__exit__ = Mock(return_value=False)
+                with patch('urllib.request.urlopen', return_value=mock_response):
+                    result = check_for_updates()
+        self.assertEqual(result["status"], "failed")
 
 
 class TestVerifyChecksum(unittest.TestCase):
@@ -186,3 +229,34 @@ class TestConstants(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUpdateStatusPhrase(unittest.TestCase):
+    """The pure phrase chooser: a failure is never 'up to date'."""
+
+    def _phrase(self, update):
+        from src.qt_dialogs import update_status_phrase
+        return update_status_phrase(update, current_version="1.4.2")
+
+    def test_failed_phrase_is_never_up_to_date(self):
+        phrase = self._phrase({"status": "failed"})
+        self.assertNotIn("up to date", phrase.lower())
+        self.assertIn("could not check", phrase.lower())
+
+    def test_current_phrase_says_up_to_date(self):
+        phrase = self._phrase({"status": "current", "version": "1.4.2"})
+        self.assertIn("up to date", phrase.lower())
+        self.assertIn("1.4.2", phrase)
+
+    def test_available_phrase_carries_the_new_version(self):
+        phrase = self._phrase({"status": "available", "version": "9.9.9"})
+        self.assertIn("9.9.9", phrase)
+        self.assertIn("available", phrase.lower())
+
+    def test_unsupported_is_neutral(self):
+        phrase = self._phrase({"status": "unsupported"})
+        self.assertNotIn("up to date", phrase.lower())
+
+    def test_none_result_is_neutral(self):
+        phrase = self._phrase(None)
+        self.assertNotIn("up to date", phrase.lower())

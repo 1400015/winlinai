@@ -32,7 +32,7 @@ def confirm_file_write_qt(parent, path: str, content: str, is_new: bool = False)
         logger.error("PySide6 is required for file write confirmation")
         return False
 
-    from ..i18n import _
+    from .i18n import _
 
     title = _("New file") if is_new else _("Proposed changes")
     dialog = QtWidgets.QDialog(parent)
@@ -67,6 +67,10 @@ def confirm_file_write_qt(parent, path: str, content: str, is_new: bool = False)
     button_box.addButton(_("Cancel"), QtWidgets.QDialogButtonBox.RejectRole)
     write_btn = button_box.addButton(_("Write file"), QtWidgets.QDialogButtonBox.AcceptRole)
     write_btn.setDefault(True)
+    # Roles alone do not close the dialog: wire accepted/rejected to the
+    # dialog result so a click on each button concludes it.
+    button_box.accepted.connect(dialog.accept)
+    button_box.rejected.connect(dialog.reject)
     layout.addWidget(button_box)
 
     # Show dialog
@@ -88,7 +92,7 @@ def confirm_file_delete_qt(parent, path: str) -> bool:
         logger.error("PySide6 is required for file delete confirmation")
         return False
 
-    from ..i18n import _
+    from .i18n import _
 
     reply = QtWidgets.QMessageBox.question(
         parent,
@@ -110,7 +114,7 @@ def show_file_info_qt(parent, info: dict):
     if not QT_AVAILABLE or info is None:
         return
 
-    from ..i18n import _
+    from .i18n import _
 
     text = (
         f"{_('Path')}: {info.get('path', '')}\n"

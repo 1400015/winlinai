@@ -88,3 +88,53 @@ class TestI18n(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFileBlockWindowsPaths(unittest.TestCase):
+    """The file-block parser accepts POSIX and Windows absolute paths."""
+
+    def test_posix_header_still_works(self):
+        blocks = FileBlock.parse_all("```/tmp/x.py\ncontent\n```")
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].path, '/tmp/x.py')
+        self.assertEqual(blocks[0].content, 'content\n')
+
+    def test_home_header_still_works(self):
+        import os as _os
+        blocks = FileBlock.parse_all("```~/x.py\ncontent\n```")
+        self.assertEqual(blocks[0].path, _os.path.expanduser('~/x.py'))
+
+    def test_windows_header(self):
+        blocks = FileBlock.parse_all("```C:\\tmp\\x.py\ncontent\n```")
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].path, 'C:\\tmp\\x.py')
+
+    def test_windows_drive_with_forward_slash_header(self):
+        blocks = FileBlock.parse_all("```C:/tmp/x.py\ncontent\n```")
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].path, 'C:/tmp/x.py')
+
+    def test_unc_header(self):
+        blocks = FileBlock.parse_all("```\\\\server\\share\\x.py\ncontent\n```")
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].path, '\\\\server\\share\\x.py')
+
+    def test_empty_info_string_windows_first_line(self):
+        blocks = FileBlock.parse_all("```\nC:\\tmp\\hello.py\nprint('hi')\n```")
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].path, 'C:\\tmp\\hello.py')
+        self.assertEqual(blocks[0].content, "print('hi')\n")
+
+    def test_empty_info_string_unc_first_line(self):
+        blocks = FileBlock.parse_all("```\n\\\\server\\share\\x.py\ncontent\n```")
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].content, 'content\n')
+
+    def test_language_label_is_not_a_path(self):
+        self.assertEqual(FileBlock.parse_all("```python\nprint('x')\n```"), [])
+        self.assertEqual(FileBlock.parse_all("```json\n{}\n```"), [])
+
+    def test_relative_name_is_not_a_path(self):
+        self.assertEqual(FileBlock.parse_all("```\nfoo.py\nprint('x')\n```"), [])
+        self.assertEqual(
+            FileBlock.parse_all("```\n..\\..\\Windows\\System32\\x.py\nx\n```"), [])

@@ -18,11 +18,14 @@ from __future__ import annotations
 import difflib
 import hashlib
 import logging
+import ntpath
 import os
+import re
+import stat
 import sys
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,50 @@ SENSITIVE_DIR_NAMES = (
 MAX_DIFF_BYTES = 1024 * 1024  # 1 MB
 
 
+def _is_link(path) -> bool:
+    """True when path exists as a symlink/junction/reparse point, any host.
+
+    os.path.islink alone misses Windows junctions: a junction is a directory
+    whose reparse data lives in FILE_ATTRIBUTE_REPARSE_POINT, so the lstat
+    file attributes are checked too.
+    """
+    try:
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode):
+            return True
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if attributes and (attributes & reparse):
+            return True
+        return not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+    except OSError:
+        return False
+
+
+def _path_or_ancestor_is_link(path) -> bool:
+    """True when the final path or any existing ancestor is a link.
+
+    An authorized directory can contain a subdirectory that is a symlink or
+    junction pointing outside it; writing through such a subdirectory
+    would create the file outside the allowed root. Every ancestor is
+    inspected up to the root before any mkdir/open/unlink/replace: a
+    missing component does not end the walk, because the components above
+    it can still be links that the later mkdir would follow.
+    """
+    candidate = os.fspath(path)
+    if _is_link(candidate):
+        return True
+    parent = os.path.dirname(candidate)
+    while parent:
+        if os.path.lexists(parent) and _is_link(parent):
+            return True
+        previous = parent
+        parent = os.path.dirname(parent)
+        if parent == previous:
+            break
+    return False
+
+
 def is_windows() -> bool:
     """True when running on Windows."""
     return sys.platform == "win32"
@@ -72,24 +119,81 @@ def get_user_home() -> Path:
     return Path.home()
 
 
+_WINDOWS_ROOT_RE = re.compile(r"^[A-Za-z]:[\\/]|^\\\\")
+
+
+_WIN_ENV_RE = re.compile(r"%(\w+)%")
+
+
+class _UnknownEnvVar(Exception):
+    """A %VAR% reference has no definition; the decision must fail closed."""
+
+
+def _expand_windows_env(path: str) -> str:
+    """Expand %VAR% references from os.environ on any host OS.
+
+    An unknown variable raises: substituting an empty string could turn the
+    path into a different, possibly allowed one. Callers fail closed.
+    """
+    def replace(match):
+        name = match.group(1)
+        value = os.environ.get(name)
+        if value is None:
+            raise _UnknownEnvVar(name)
+        return value
+    return _WIN_ENV_RE.sub(replace, path)
+
+
+def _windows_relative_to(path: PureWindowsPath, base: PureWindowsPath) -> bool:
+    """Case-insensitive containment test that works on Python 3.8.
+
+    Windows paths are case-insensitive; PurePath.is_relative_to is 3.9+.
+    """
+    path_parts = [part.lower() for part in path.parts]
+    base_parts = [part.lower() for part in base.parts]
+    if len(path_parts) < len(base_parts):
+        return False
+    return path_parts[:len(base_parts)] == base_parts
+
+
+def _is_windows_style(path: str) -> bool:
+    """True for drive-letter (C:\\...) or UNC (\\\\server\\share) paths."""
+    return bool(_WINDOWS_ROOT_RE.match(path.replace("/", "\\")))
+
+
+def _normalize_pure(path: str) -> PureWindowsPath:
+    """Normalize with Windows semantics for security decisions.
+
+    Works identically on Windows and on the Linux CI: ``ntpath`` interprets
+    drive letters, separators and dot segments, and ``PureWindowsPath``
+    exposes the resulting components without touching the filesystem.
+    """
+    expanded = os.path.expandvars(_expand_windows_env(path))
+    expanded = os.path.expanduser(expanded)
+    if _is_windows_style(expanded):
+        return PureWindowsPath(ntpath.normpath(expanded))
+    return PureWindowsPath(os.path.normpath(expanded))
+
+
 def normalize_windows_path(path: str) -> Path:
-    """Normalize a Windows path (expand env vars, resolve relative, etc.).
+    """Normalize a path with Windows semantics, regardless of the host OS.
+
+    Drive-letter and UNC paths are interpreted with ``ntpath`` rules so the
+    behaviour of this module is identical on Windows and on the Linux CI.
+    Relative paths resolve against the current directory using the host's
+    path module, matching the behaviour of the running application.
 
     Handles:
     - Environment variables (%USERPROFILE%, %APPDATA%, etc.)
     - Tilde expansion (~)
     - Relative paths
     - Forward/backward slashes
+    - Dot segments (.., .)
     """
-    # Expand environment variables
-    path = os.path.expandvars(path)
-    # Expand tilde
-    path = os.path.expanduser(path)
-    # Normalize slashes and resolve
-    path = os.path.normpath(path)
-    # Convert to absolute
-    path = os.path.abspath(path)
-    return Path(path)
+    expanded = os.path.expanduser(os.path.expandvars(_expand_windows_env(path)))
+    if _is_windows_style(expanded):
+        return Path(str(_normalize_pure(path)))
+    return Path(os.path.normpath(expanded)).absolute()
 
 
 def is_sensitive_windows_path(path: str) -> bool:
@@ -105,7 +209,7 @@ def is_sensitive_windows_path(path: str) -> bool:
     try:
         if not path or not isinstance(path, str):
             return True  # Fail closed on empty/invalid input
-        normalized = normalize_windows_path(path)
+        normalized = _normalize_pure(path)
         path_str = str(normalized).lower()
 
         # Check sensitive directories
@@ -127,8 +231,8 @@ def is_sensitive_windows_path(path: str) -> bool:
                     return True
 
         return False
-    except Exception:
-        return True  # Fail closed
+    except _UnknownEnvVar:
+        return True  # Fail closed: the real target is unknowable
 
 
 def is_allowed_windows_path(path: str, allowed_dirs: Optional[List[str]] = None) -> bool:
@@ -146,31 +250,30 @@ def is_allowed_windows_path(path: str, allowed_dirs: Optional[List[str]] = None)
         True if the path is allowed
     """
     try:
-        normalized = normalize_windows_path(path)
-
+        normalized = _normalize_pure(path)
+    except _UnknownEnvVar:
+        return False  # Fail closed: the real target is unknowable
+    try:
         # Block sensitive paths
         if is_sensitive_windows_path(str(normalized)):
             return False
 
         # Check if inside home
-        home = get_user_home()
-        try:
-            normalized.relative_to(home)
+        home = PureWindowsPath(str(get_user_home()))
+        if _windows_relative_to(normalized, home):
             return True
-        except ValueError:
-            pass
 
         # Check allowed directories
         for allowed_dir in allowed_dirs or ():
             try:
-                allowed = normalize_windows_path(allowed_dir)
-                normalized.relative_to(allowed)
-                return True
-            except ValueError:
+                allowed = _normalize_pure(allowed_dir)
+            except _UnknownEnvVar:
                 continue
+            if _windows_relative_to(normalized, allowed):
+                return True
 
         return False
-    except Exception:
+    except _UnknownEnvVar:
         return False
 
 
@@ -180,15 +283,13 @@ def is_privileged_windows_path(path: str) -> bool:
     On Windows, paths outside the user's home typically require elevation.
     """
     try:
-        normalized = normalize_windows_path(path)
-        home = get_user_home()
-        try:
-            normalized.relative_to(home)
-            return False  # Inside home, no elevation needed
-        except ValueError:
-            return True  # Outside home, may need elevation
-    except Exception:
-        return True
+        normalized = _normalize_pure(path)
+    except _UnknownEnvVar:
+        return True  # Fail closed: unknown target needs elevation
+    home = PureWindowsPath(str(get_user_home()))
+    if _windows_relative_to(normalized, home):
+        return False  # Inside home, no elevation needed
+    return True  # Outside home, may need elevation
 
 
 def file_digest(path: str) -> Optional[str]:
@@ -208,7 +309,13 @@ def preview_diff(path: str, new_content: str) -> Optional[str]:
 
     Returns None if the file doesn't exist (new file).
     Returns the diff text, with truncation notice if file is too large.
+
+    The same ancestor-link refusal as the write boundary runs before the
+    open: os.path.isfile and open follow links, so exterior content behind
+    a linked subdirectory must never appear in a diff.
     """
+    if _path_or_ancestor_is_link(path):
+        return None
     path = os.path.expanduser(path)
     if not os.path.isfile(path):
         return None
@@ -252,12 +359,22 @@ def make_backup(path: str) -> Optional[str]:
     return None
 
 
-def write_file_safe(path: str, content: str, create_backup: bool = True) -> Tuple[bool, str, Optional[str]]:
+def _file_identity(path: str):
+    """Host-independent file identity used across the publication window."""
+    info = os.lstat(path)
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
+def write_file_safe(path: str, content: str, create_backup: bool = True,
+                    allowed_dirs: Optional[List[str]] = None) -> Tuple[bool, str, Optional[str]]:
     """Safely write content to a file.
 
-    - Validates the path is allowed
-    - Creates a backup if the file exists
-    - Writes atomically (temp file + rename)
+    - Validates the path against the allowlist and the sensitive list before
+      any filesystem operation
+    - Refuses symlink/junction/reparse-point destinations and temporaries
+    - Creates a random, exclusive temporary in the destination directory
+    - Aborts when a required backup fails, leaving the original intact
+    - Revalidates the destination identity before publishing the rename
 
     Args:
         path: Target file path
@@ -267,42 +384,98 @@ def write_file_safe(path: str, content: str, create_backup: bool = True) -> Tupl
     Returns:
         (success, message, backup_path)
     """
+    # Security decisions run before any mkdir/open/unlink/replace. They use
+    # ntpath/PureWindowsPath semantics (see _normalize_pure) and never the
+    # host's expandvars/expanduser/normpath/abspath.
+    if is_sensitive_windows_path(path):
+        return False, "Path is sensitive and cannot be written", None
+    if not is_allowed_windows_path(path, allowed_dirs):
+        return False, "Path is not allowed for AI writes", None
     try:
         normalized = normalize_windows_path(path)
 
-        # Create parent directories if needed
+        # A destination that exists as a link - or that sits under an
+        # ancestor that is a link - is refused outright: writing through
+        # it would leave the allowed directory. This runs before mkdir.
+        if _path_or_ancestor_is_link(normalized):
+            return False, "Refusing to write through a link", None
+
+        # Create parent directories if needed (inside the allowed root)
         normalized.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create backup
+        # Backup first: a required backup that fails aborts the write so the
+        # original file stays intact.
         backup = None
-        if create_backup and normalized.exists():
-            backup = make_backup(str(normalized))
+        target_identity = None
+        if normalized.exists():
+            if _is_link(normalized):
+                return False, "Refusing to write through a link", None
+            if create_backup:
+                backup = make_backup(str(normalized))
+                if backup is None:
+                    return False, "Backup failed; write aborted, original preserved", None
+            target_identity = _file_identity(str(normalized))
 
-        # Write atomically (temp file + rename)
-        temp_path = normalized.with_suffix(normalized.suffix + ".tmp")
-        with open(temp_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        # Atomic rename
-        os.replace(temp_path, normalized)
+        # Random, exclusive temporary in the destination directory; a
+        # pre-existing name is never opened with "w" (that would follow a
+        # planted symlink) because O_EXCL refuses to create over anything.
+        temp_path = None
+        for _ in range(100):
+            candidate = normalized.with_name(
+                normalized.name + "." + uuid.uuid4().hex + ".tmp")
+            try:
+                temp_fd = os.open(str(candidate),
+                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
+                temp_path = candidate
+                break
+            except FileExistsError:
+                continue
+        if temp_path is None:
+            return False, "Could not allocate an exclusive temporary file", None
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                f.write(content)
 
-        return True, f"File written: {normalized}", backup
+            # Publication window: the destination must not have been replaced
+            # between the backup and the rename.
+            if target_identity is not None:
+                if not normalized.exists() or _file_identity(str(normalized)) != target_identity:
+                    return False, "Destination changed during the write; original preserved", None
+            elif normalized.exists():
+                return False, "Destination appeared during the write; nothing published", None
+
+            os.replace(str(temp_path), str(normalized))
+            return True, f"File written: {normalized}", backup
+        except OSError:
+            try:
+                os.unlink(str(temp_path))
+            except OSError:
+                pass
+            raise
 
     except PermissionError as e:
         return False, f"Permission denied: {e}", None
     except OSError as e:
         return False, f"Write failed: {e}", None
-    except Exception as e:
-        return False, f"Unexpected error: {type(e).__name__}", None
 
 
-def read_file_preview(path: str, max_bytes: int = MAX_DIFF_BYTES) -> Tuple[bool, str, bool]:
+def read_file_preview(path: str, max_bytes: int = MAX_DIFF_BYTES,
+                       allowed_dirs: Optional[List[str]] = None) -> Tuple[bool, str, bool]:
     """Read a file for preview (bounded).
+
+    The allowlist and the sensitive list are checked before any open.
 
     Returns:
         (success, content, truncated)
     """
+    if is_sensitive_windows_path(path):
+        return False, "Path is sensitive and cannot be read", False
+    if not is_allowed_windows_path(path, allowed_dirs):
+        return False, "Path is not allowed for AI reads", False
     try:
         path = os.path.expanduser(path)
+        if _path_or_ancestor_is_link(path):
+            return False, "Refusing to read through a link", False
         if not os.path.isfile(path):
             return False, "File not found", False
         size = os.path.getsize(path)
@@ -343,21 +516,34 @@ def list_directory(path: str, max_items: int = 100) -> Tuple[bool, List[dict], O
         return False, [], str(e)
 
 
-def delete_file_safe(path: str, create_backup: bool = True) -> Tuple[bool, str, Optional[str]]:
+def delete_file_safe(path: str, create_backup: bool = True,
+                     allowed_dirs: Optional[List[str]] = None) -> Tuple[bool, str, Optional[str]]:
     """Safely delete a file (with optional backup).
+
+    The allowlist and the sensitive list are checked before any exists,
+    backup or unlink; links are refused so a planted link is never followed
+    or deleted.
 
     Returns:
         (success, message, backup_path)
     """
+    if is_sensitive_windows_path(path):
+        return False, "Path is sensitive and cannot be deleted", None
+    if not is_allowed_windows_path(path, allowed_dirs):
+        return False, "Path is not allowed for AI deletes", None
     try:
         normalized = normalize_windows_path(path)
+        if _path_or_ancestor_is_link(normalized):
+            return False, "Refusing to delete through a link", None
         if not normalized.exists():
             return False, "File not found", None
 
-        # Create backup
+        # A required backup that fails aborts the delete: the original stays.
         backup = None
         if create_backup:
             backup = make_backup(str(normalized))
+            if backup is None:
+                return False, "Backup failed; delete aborted, original preserved", None
 
         # Delete
         normalized.unlink()
@@ -436,7 +622,8 @@ class WindowsFileActions:
                 return "cancelled", "User cancelled"
 
         # Write
-        success, message, backup = write_file_safe(str(normalized), content)
+        success, message, backup = write_file_safe(str(normalized), content,
+                                                   allowed_dirs=self.allowed_dirs)
         if success:
             return "written", message
         return "error", message
@@ -445,7 +632,8 @@ class WindowsFileActions:
         """Read a file (bounded)."""
         if not self.is_allowed(path):
             return False, "Path not allowed"
-        success, content, _truncated = read_file_preview(path, max_bytes)
+        success, content, _truncated = read_file_preview(path, max_bytes,
+                                                        allowed_dirs=self.allowed_dirs)
         return success, content
 
     def delete_file(self, path: str,
@@ -464,7 +652,8 @@ class WindowsFileActions:
             if not confirmed:
                 return "cancelled", "User cancelled"
 
-        success, message, _backup = delete_file_safe(str(normalized))
+        success, message, _backup = delete_file_safe(str(normalized),
+                                                    allowed_dirs=self.allowed_dirs)
         if success:
             return "written", message
         return "error", message

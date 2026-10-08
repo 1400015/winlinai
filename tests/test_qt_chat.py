@@ -193,9 +193,25 @@ class TestShouldUseProvider(unittest.TestCase):
         config = Mock()
         config.get_api_key = Mock(return_value=None)
         config.get = Mock(side_effect=lambda key, default=None: {
+            "api.provider": "local_llm",
             "api.providers.local_llm.base_url": "http://localhost:11434"
         }.get(key, default))
         self.assertTrue(should_use_provider(client, config))
+
+    def test_default_local_url_without_selection_is_not_ready(self):
+        """A stock config has a default local URL but no active provider.
+
+        Treating the bare URL as a ready provider dispatches the question to
+        a worker that cannot answer (no local server on the machine), which
+        is what the wheel smoke test exercised on the Windows runner.
+        """
+        client = Mock()
+        config = Mock()
+        config.get_api_key = Mock(return_value=None)
+        config.get = Mock(side_effect=lambda key, default=None: {
+            "api.providers.local_llm.base_url": "http://localhost:11434/v1"
+        }.get(key, default))
+        self.assertFalse(should_use_provider(client, config))
 
     def test_broken_config(self):
         client = Mock()

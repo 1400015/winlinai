@@ -257,6 +257,41 @@ def search_packages(query: str, limit: int = 20) -> Tuple[bool, List[Dict], Opti
     return True, _parse_winget_table(stdout, limit, with_source=False), None
 
 
+def list_volumes(limit: int = 32) -> Tuple[bool, List[Dict], Optional[str]]:
+    """List storage volumes (read-only Get-Volume probe).
+
+    Returns (success, volumes_list, error_message). Each volume carries
+    drive_letter, label, size_gb and free_gb via normalize_volume.
+    """
+    if not is_windows():
+        return False, [], "Not on Windows"
+    result = _run_powershell(["Get-Volume"])
+    if not result["ok"]:
+        return False, [], result.get("error", "Unknown error")
+    data = result.get("data")
+    if not isinstance(data, list):
+        data = [data] if isinstance(data, dict) else []
+    from .platform.pwsh_output import normalize_volume
+    volumes = [normalize_volume(v) for v in data if isinstance(v, dict)]
+    return True, volumes[:limit], None
+
+
+def format_volumes_table(volumes: List[Dict]) -> str:
+    """Format volumes as a text table."""
+    if not volumes:
+        return "No volumes found"
+    lines = ["Drive  Label                    Size(GB)   Free(GB)   FS"]
+    lines.append("-" * 60)
+    for v in volumes:
+        letter = str(v.get("drive_letter", "") or "-")[:4]
+        label = str(v.get("label", ""))[:24]
+        size = "{:.1f}".format(v.get("size_gb", 0))[:9]
+        free = "{:.1f}".format(v.get("free_gb", 0))[:9]
+        fs = str(v.get("file_system", ""))[:10]
+        lines.append("{:<6} {:<24} {:<10} {:<10} {}".format(letter, label, size, free, fs))
+    return "\n".join(lines)
+
+
 def format_services_table(services: List[Dict]) -> str:
     """Format services as a text table."""
     if not services:
