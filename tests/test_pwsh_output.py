@@ -26,25 +26,46 @@ class TestWrapCmdletJson(unittest.TestCase):
         self.assertEqual(argv[:5],
                          ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"))
         script = _decode_script(argv)
-        self.assertIn("Get-Service", script)
-        self.assertIn("ConvertTo-Json", script)
-        self.assertIn("-Compress", script)
+        # A bare invocation, never the quoted string literal.
+        self.assertIn("Get-Service | ConvertTo-Json -Compress -Depth 10", script)
+        self.assertNotIn("'Get-Service'", script)
 
     def test_cmdlet_with_parameters(self):
         argv = wrap_cmdlet_json(["Get-Service", "-Name", "wuauserv"])
         script = _decode_script(argv)
-        self.assertIn("Get-Service", script)
-        self.assertIn("-Name", script)
-        self.assertIn("'wuauserv'", script)
+        self.assertIn("Get-Service -Name 'wuauserv' | ConvertTo-Json -Compress -Depth 10", script)
+        self.assertNotIn("'Get-Service'", script)
 
     def test_quotes_are_escaped(self):
         argv = wrap_cmdlet_json(["Get-Service", "-Name", "it's"])
         script = _decode_script(argv)
-        self.assertIn("'it''s'", script)
+        # The interior apostrophe doubles (it's -> it''s) and the value
+        # stays a quoted literal.
+        self.assertIn("Get-Service -Name 'it''s' | ConvertTo-Json", script)
 
     def test_empty_argv_raises(self):
         with self.assertRaises(ValueError):
             wrap_cmdlet_json([])
+
+    def test_cmdlet_name_with_pipe_raises(self):
+        with self.assertRaises(ValueError):
+            wrap_cmdlet_json(["Get-Service | whoami"])
+
+    def test_cmdlet_name_with_semicolon_raises(self):
+        with self.assertRaises(ValueError):
+            wrap_cmdlet_json(["Get-Service; Remove-Item -Recurse C:/"])
+
+    def test_cmdlet_name_with_backtick_raises(self):
+        with self.assertRaises(ValueError):
+            wrap_cmdlet_json(["Get-Service`whoami"])
+
+    def test_cmdlet_name_with_subexpression_raises(self):
+        with self.assertRaises(ValueError):
+            wrap_cmdlet_json(["Get-Ser$(whoami)"])
+
+    def test_cmdlet_name_with_space_raises(self):
+        with self.assertRaises(ValueError):
+            wrap_cmdlet_json(["Get Service"])
 
 
 class TestParseJsonOutput(unittest.TestCase):
