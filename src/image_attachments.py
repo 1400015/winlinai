@@ -126,11 +126,37 @@ def prepare_image_bytes(data: bytes, filename: str = "capture.png") -> ImageAtta
         raise ImageAttachmentError("Image could not be decoded safely") from None
 
 
+def _is_link_path(path) -> bool:
+    """True when the path or any existing ancestor is a link, any host.
+
+    os.path.islink alone misses Windows junctions; the lstat file
+    attributes are checked as well (FILE_ATTRIBUTE_REPARSE_POINT).
+    """
+    try:
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode):
+            return True
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if attributes and (attributes & reparse):
+            return True
+        return not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+    except OSError:
+        return False
+
+
 def prepare_image(path: Union[str, os.PathLike]) -> ImageAttachment:
     """Read one regular, non-symlink file with a source-byte limit."""
     descriptor = None
     try:
-        descriptor = os.open(os.fspath(path), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        # O_NOFOLLOW does not exist on Windows: refuse the link explicitly
+        # before opening, and never follow one on any host.
+        if _is_link_path(os.fspath(path)):
+            raise ImageAttachmentError("Refusing to attach an image through a link")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
+        descriptor = os.open(os.fspath(path), flags)
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_SOURCE_BYTES:
             raise ImageAttachmentError("Choose a regular image file no larger than 12 MiB")

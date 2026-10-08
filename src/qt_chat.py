@@ -160,7 +160,7 @@ if QT_AVAILABLE:
                 expert=expert, distro=distro, query=query, context=context)
             if error == "cancelled":
                 self.cancelled.emit(messages[-1]["content"] if messages else "")
-            elif error.startswith("image:"):
+            elif error and error.startswith("image:"):
                 self.image_failed.emit(error[len("image:"):])
             elif error:
                 self.failed.emit(messages[-1]["content"] if messages else "")
