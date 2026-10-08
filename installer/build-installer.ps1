@@ -123,7 +123,7 @@ if (-not $iscc) {
 # Single source of truth: read __version__ from src/_version.py.
 $versionFile = Join-Path $ProjectDir "src" "_version.py"
 $versionContent = Get-Content $versionFile -Raw
-if ($versionContent -notmatch '__version__\s*=\s*['"]([^'"]+)['"]') {
+if ($versionContent -notmatch ('__version__' + [char]92 + 's*=' + [char]92 + 's*.([0-9][0-9A-Za-z.+-]*).*')) {
     Write-Error "Could not read __version__ from $versionFile"
     exit 1
 }
