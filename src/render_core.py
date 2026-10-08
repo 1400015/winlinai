@@ -20,6 +20,26 @@ def esc(text: str) -> str:
     return xml.sax.saxutils.escape(text)
 
 
+_WIN_PATH_RE = re.compile(
+    r"^[A-Za-z]:[\\/][^\0]*$"     # drive letter with \ or /
+    r"|^\\\\[^\\/]+\\[^\\/]+.*$"  # UNC \\server\share...
+    r"|^//[^/]+/[^/]+.*$")          # UNC //server/share...
+_WIN_PATH_FIRST_LINE_RE = re.compile(
+    r"^[A-Za-z]:[\\/][^\0]*$"
+    r"|^\\\\[^\\/]+\\[^\\/]+.*$"
+    r"|^//[^/]+/[^/]+.*$")
+
+
+def _is_absolute_path_line(line: str) -> bool:
+    """True for an absolute POSIX or Windows path, without resolving it.
+
+    The decision is lexical only: no expanduser/expandvars/normpath/abspath,
+    and it never opens the path. Security stays in WindowsFileActions and
+    write_file_safe, which refuse links, junctions and sensitive paths.
+    """
+    return bool(_WIN_PATH_RE.match(line))
+
+
 class FileBlock:
     """A ``` block with a file path on the first line."""
 
@@ -28,13 +48,40 @@ class FileBlock:
         self.content = content
 
     @classmethod
+    def _from_header(cls, header: str, body: str):
+        """A path in the fence's info string; the body is the content."""
+        if header.startswith("/") or header.startswith("~/"):
+            return cls(os.path.expanduser(header), body)
+        if _WIN_PATH_RE.match(header):
+            return cls(header, body)
+        return None
+
+    @classmethod
+    def _from_first_line(cls, body: str):
+        """An empty info string: the first body line is the path only when
+        it is an absolute path of a known form. The rest is the content."""
+        stripped = body.lstrip("\r\n")
+        lines = stripped.split("\n", 1)
+        if len(lines) < 2:
+            return None
+        first, content = lines[0].strip("\r"), lines[1]
+        if not _WIN_PATH_FIRST_LINE_RE.match(first):
+            return None
+        return cls(first, content)
+
+    @classmethod
     def parse_all(cls, text):
         blocks = []
         for match in CODE_RE.finditer(text):
             header = match.group(1).strip()
             body = match.group(2)
-            if header.startswith("/") or header.startswith("~/"):
-                blocks.append(cls(os.path.expanduser(header), body))
+            block = cls._from_header(header, body)
+            if block is None and not header:
+                # A language label (```python) is not a path; a relative
+                # name (foo.py, ..\..\Windows) is not a path either.
+                block = cls._from_first_line(body)
+            if block is not None:
+                blocks.append(block)
         return blocks
 
 

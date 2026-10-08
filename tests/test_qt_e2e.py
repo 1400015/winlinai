@@ -432,6 +432,57 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
         self.assertIn("not allowed", chat.log.toPlainText())
 
 
+class TestQtFileDialogButtons(TestQtE2EBase):
+    """The confirmation dialog's buttons conclude the dialog (no patching)."""
+
+    def _make_dialog(self):
+        from src.qt_file_dialogs import confirm_file_write_qt, QT_AVAILABLE
+        if not QT_AVAILABLE:
+            self.skipTest('PySide6 required for dialog tests')
+        return confirm_file_write_qt
+
+    def test_write_button_accepts_and_cancel_button_rejects(self):
+        """A click on Write accepts; a click on Cancel rejects.
+
+        Runs against the real dialog: the function is not patched, only
+        exec() is replaced so the modal loop does not block the test.
+        """
+        from unittest.mock import patch
+        from PySide6 import QtWidgets
+        confirm = self._make_dialog()
+
+        captured = {}
+
+        def fake_exec(self_dialog):
+            captured['dialog'] = self_dialog
+            # Find the button box and click each button in turn.
+            box = self_dialog.findChild(QtWidgets.QDialogButtonBox)
+            self.assertIsNotNone(box)
+            buttons = box.buttons()
+            self.assertEqual(len(buttons), 2)
+            # Click Write (AcceptRole) -> the dialog must accept.
+            write_button = next(b for b in buttons
+                                if box.buttonRole(b) == QtWidgets.QDialogButtonBox.AcceptRole)
+            write_button.click()
+            return self_dialog.result()
+
+        with patch('PySide6.QtWidgets.QDialog.exec', side_effect=fake_exec, autospec=True):
+            self.assertTrue(confirm(None, '/tmp/x.py', 'content', is_new=True))
+            dialog = captured['dialog']
+            self.assertEqual(dialog.result(), QtWidgets.QDialog.Accepted)
+
+        def fake_exec_reject(self_dialog):
+            box = self_dialog.findChild(QtWidgets.QDialogButtonBox)
+            buttons = box.buttons()
+            cancel_button = next(b for b in buttons
+                                 if box.buttonRole(b) == QtWidgets.QDialogButtonBox.RejectRole)
+            cancel_button.click()
+            return self_dialog.result()
+
+        with patch('PySide6.QtWidgets.QDialog.exec', side_effect=fake_exec_reject, autospec=True):
+            self.assertFalse(confirm(None, '/tmp/y.py', 'content', is_new=True))
+
+
 class TestQtUpdatesE2E(TestQtE2EBase):
     """E2E: Settings has an Updates section; startup check respects config."""
 

@@ -298,7 +298,9 @@ class TestNativeWindowsStorage(unittest.TestCase):
         self.assertEqual((target / 'secret.json').read_text(), '{"secret": true}')
 
     def test_owned_text_is_bounded_and_identity_checks_reject_external_edits(self):
-        self.path.write_text('KEY=\n', encoding='utf-8')
+        # Write LF bytes: write_text would emit CRLF on Windows and the
+        # byte-exact read below would see 'KEY=\r\n'.
+        self.path.write_bytes(b'KEY=\n')
         text, identity = windows_files.read_owned_text(self.path, 128)
         self.assertEqual(text, 'KEY=\n')
         self.assertEqual(windows_files.owned_identity(self.path), identity)
@@ -308,7 +310,7 @@ class TestNativeWindowsStorage(unittest.TestCase):
         with os.fdopen(descriptor, 'wb') as target:
             target.write(b'NEW=value\n')
         self.addCleanup(lambda: Path(name).unlink(missing_ok=True))
-        self.path.write_text('EXTERNAL=value\n', encoding='utf-8')
+        self.path.write_bytes(b'EXTERNAL=value\n')
         with self.assertRaisesRegex(ValueError, 'changed'):
             windows_files.publish_temporary(name, self.path, expected_identity=identity)
         self.assertEqual(self.path.read_text(), 'EXTERNAL=value\n')
