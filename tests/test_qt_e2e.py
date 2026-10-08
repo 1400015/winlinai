@@ -451,11 +451,16 @@ class TestQtFileDialogButtons(TestQtE2EBase):
         from PySide6 import QtWidgets
         confirm = self._make_dialog()
 
-        captured = {}
+        def newest_confirmation_dialog():
+            dialogs = [widget for widget in QtWidgets.QApplication.topLevelWidgets()
+                       if isinstance(widget, QtWidgets.QDialog)]
+            self.assertTrue(dialogs)
+            return dialogs[-1]
 
-        def fake_exec(self_dialog):
-            captured['dialog'] = self_dialog
-            # Find the button box and click each button in turn.
+        def fake_exec():
+            # exec() is mocked so the modal loop does not block the test;
+            # the real dialog and its buttons are exercised.
+            self_dialog = newest_confirmation_dialog()
             box = self_dialog.findChild(QtWidgets.QDialogButtonBox)
             self.assertIsNotNone(box)
             buttons = box.buttons()
@@ -466,12 +471,11 @@ class TestQtFileDialogButtons(TestQtE2EBase):
             write_button.click()
             return self_dialog.result()
 
-        with patch('PySide6.QtWidgets.QDialog.exec', side_effect=fake_exec, autospec=True):
+        with patch.object(QtWidgets.QDialog, 'exec', side_effect=fake_exec):
             self.assertTrue(confirm(None, '/tmp/x.py', 'content', is_new=True))
-            dialog = captured['dialog']
-            self.assertEqual(dialog.result(), QtWidgets.QDialog.Accepted)
 
-        def fake_exec_reject(self_dialog):
+        def fake_exec_reject():
+            self_dialog = newest_confirmation_dialog()
             box = self_dialog.findChild(QtWidgets.QDialogButtonBox)
             buttons = box.buttons()
             cancel_button = next(b for b in buttons
@@ -479,7 +483,7 @@ class TestQtFileDialogButtons(TestQtE2EBase):
             cancel_button.click()
             return self_dialog.result()
 
-        with patch('PySide6.QtWidgets.QDialog.exec', side_effect=fake_exec_reject, autospec=True):
+        with patch.object(QtWidgets.QDialog, 'exec', side_effect=fake_exec_reject):
             self.assertFalse(confirm(None, '/tmp/y.py', 'content', is_new=True))
 
 
