@@ -74,21 +74,21 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel
             expert=expert, distro=distro, query=query, lang=lang, context=context)
         full_messages = [system_message] + list(messages)
 
-        # Prepare images if provided
+        # image_paths are already-prepared ImageAttachment objects (prepared
+        # and validated on the UI thread before this worker started). Validate
+        # the immutable snapshot once more; on any failure the request is
+        # refused - it is never sent without the image the user attached.
         images: Optional[list] = None
         if image_paths:
-            try:
-                from .image_attachments import validate_attachment
-                images = []
-                for path in image_paths:
-                    attachment = validate_attachment(path)
-                    if attachment:
-                        images.append(attachment)
-                if not images:
-                    images = None
-            except Exception as error:
-                logger.warning("Image validation failed: %s", type(error).__name__)
-                images = None
+            from .image_attachments import ImageAttachmentError, validate_attachment
+            validated = []
+            for attachment in image_paths:
+                try:
+                    validate_attachment(attachment)
+                except ImageAttachmentError as error:
+                    return None, "image:{}".format(error)
+                validated.append(attachment)
+            images = validated
 
         response = ai_client.chat(full_messages, images=images, cancel_event=cancel_event)
         if response:
@@ -150,6 +150,7 @@ if QT_AVAILABLE:
         finished = QtCore.Signal(str)      # (text)
         failed = QtCore.Signal(str)        # (last_user_message) -> offline fallback
         cancelled = QtCore.Signal(str)     # (last_user_message)
+        image_failed = QtCore.Signal(str)  # (message) -> visible image refusal
 
         def run(self, ai_client, messages, lang, image_paths, cancel_event,
                 expert=False, distro=None, query="", context=None):
@@ -159,6 +160,8 @@ if QT_AVAILABLE:
                 expert=expert, distro=distro, query=query, context=context)
             if error == "cancelled":
                 self.cancelled.emit(messages[-1]["content"] if messages else "")
+            elif error.startswith("image:"):
+                self.image_failed.emit(error[len("image:"):])
             elif error:
                 self.failed.emit(messages[-1]["content"] if messages else "")
             else:
@@ -467,6 +470,23 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         if self.response_received is not None:
             self.response_received.emit(answer)
 
+    @staticmethod
+    def _prepare_attachment(path):
+        """Prepare one attached image on the calling (UI) thread.
+
+        Links are refused before any read (O_NOFOLLOW is POSIX-only; on
+        Windows a junction needs the explicit check), the file is read once
+        through prepare_image's O_NOFOLLOW open and normalized, and the
+        immutable snapshot is validated before it can join a request.
+        """
+        from .windows_file_actions import _path_or_ancestor_is_link
+        from .image_attachments import ImageAttachmentError, prepare_image, validate_attachment
+        if _path_or_ancestor_is_link(path):
+            raise ImageAttachmentError("Refusing to attach an image through a link")
+        attachment = prepare_image(path)
+        validate_attachment(attachment)
+        return attachment
+
     def _send_to_provider(self):
         """Send to the AI provider via a signal-based worker (no invokeMethod).
 
@@ -480,14 +500,34 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         # Immutable snapshot: the worker reads this, the main thread keeps
         # appending to self._pending_messages for the next turn.
         messages = list(self._pending_messages)
-        # Capture attachment paths (they are cleared after send)
-        attachment_paths = [a["path"] for a in self._attachments]
+        # Prepare attachments on the UI thread, before the worker starts: a
+        # preparation failure must be visible and must not let the request
+        # continue as if the image had been sent. The worker receives ready
+        # ImageAttachment objects, never paths.
+        attachments = None
+        if self._attachments:
+            from .image_attachments import ImageAttachmentError
+            prepared = []
+            failure = None
+            for attachment in self._attachments:
+                try:
+                    prepared.append(self._prepare_attachment(attachment["path"]))
+                except ImageAttachmentError as error:
+                    failure = str(error)
+                    break
+            if failure is not None:
+                self._hide_thinking()
+                from . import i18n
+                self.append_message(i18n._("System"), failure)
+                return
+            attachments = prepared or None
 
         self._cancel_event.clear()
         self._worker = _ProviderWorker()
         self._worker.finished.connect(self._on_provider_response)
         self._worker.failed.connect(self._on_provider_failed)
         self._worker.cancelled.connect(self._on_provider_cancelled)
+        self._worker.image_failed.connect(self._on_provider_image_failed)
         # Capture context for the system message (parity with GTK track)
         try:
             expert = bool(self.config.get("app.expert_mode", False))
@@ -503,7 +543,7 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         self._worker_thread = threading.Thread(
             target=self._worker.run,
             args=(self.ai_client, messages, lang,
-                  attachment_paths if attachment_paths else None,
+                  attachments,
                   self._cancel_event),
             kwargs={"expert": expert, "distro": distro,
                     "query": query, "context": context},
@@ -540,6 +580,14 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         if self._request_session_is_selected():
             self._pending_messages.append({"role": "assistant", "content": answer})
             self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
+        self._finish_request()
+
+    @_Slot(str)
+    def _on_provider_image_failed(self, message):
+        """The prepared image did not survive validation: refuse visibly."""
+        from . import i18n
+        self._hide_thinking()
+        self.append_message(i18n._("System"), message)
         self._finish_request()
 
     @_Slot(str)
