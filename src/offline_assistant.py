@@ -567,6 +567,10 @@ class OfflineAssistant:
     def _handle(self, message: str, lang: str = "en") -> Reply:
         if lang not in _TEXTS:
             lang = "en"
+        if self._platform == "windows":
+            from .platform.shell_pwsh import FORBIDDEN_TOKENS
+        else:
+            FORBIDDEN_TOKENS = ()
         text = (message or "").strip()
         low = " " + text.lower() + " "
         distro = self._distro
@@ -607,6 +611,14 @@ class OfflineAssistant:
 
         intent, score = _match_intent(low)
         if not intent or score == 0:
+            # Native Windows: a whole-word process(es) mention with no other
+            # recognized intent answers with the read-only process table.
+            # Phrases with problems, errors or diagnostics already returned
+            # through the branches above; this only catches the plain list.
+            if (self._platform == "windows"
+                    and not any(token in text for token in FORBIDDEN_TOKENS)
+                    and re.search(r"\bprocess(?:o|os|es)?\b", low)):
+                return self._windows_processes_reply(lang)
             matches = search_procedures(text, distro, limit=1)
             if matches:
                 return Reply(render_procedure(matches[0], lang, distro))
@@ -1063,7 +1075,111 @@ class OfflineAssistant:
         self.system_context = context
         self._distro = compatible_distro(self.distro, context)
 
+    def _windows_services_reply(self, lang: str, text: str) -> Reply:
+        """Read-only service probes on native Windows.
+
+        The user sentence never reaches a script, a -Command or an argv:
+        the only argv are the ones list_services/get_service_status build
+        themselves. Mutations and unsafe names are refused with text only.
+        """
+        from .platform.shell_pwsh import FORBIDDEN_TOKENS, validate_pwsh_arguments
+        from .windows_system_actions import (
+            format_services_table, get_service_status, list_services)
+
+        if any(token in text for token in FORBIDDEN_TOKENS):
+            return Reply("O nome do serviço não é aceite: contém caracteres não permitidos."
+                         if lang == "pt" else
+                         "The service name is not accepted: it contains forbidden characters.")
+
+        match = _SVC_RE.search(text)
+        if match:
+            # A mutation request: this chat only reads service state.
+            match_low = match.group(0).lower()
+            for _key, words in _ACTION_WORDS:
+                if any(re.search(r"\b" + re.escape(word) + r"\b", match_low)
+                       for word in words):
+                    return Reply(
+                        "Este chat apenas lê o estado: não inicia, para, "
+                        "reinicia, ativa nem desativa serviços."
+                        if lang == "pt" else
+                        "This chat only reads state: it does not start, stop, "
+                        "restart, enable or disable services.")
+
+        # Without an action verb, a single token right after the service
+        # word names the service to inspect ("estado do serviço wuauserv").
+        name = None
+        if match:
+            name = _valid(match.group(1))
+        else:
+            after = re.search(
+                r"\b(?:service|servi[cç]o|servico|servicio|dienst)\s+"
+                r"([A-Za-z0-9][A-Za-z0-9@._:-]{0,63})", text, re.IGNORECASE)
+            if after:
+                candidate = _valid(after.group(1))
+                # Exactly one token after the service word; more than one
+                # (space-separated) means the phrase is not a simple lookup.
+                rest = text[after.end():].strip(" .?!")
+                if candidate and not rest:
+                    name = candidate
+        if name is not None:
+            if name:
+                if not validate_pwsh_arguments(["Get-Service", "-Name", name]):
+                    return Reply(
+                        "O nome do serviço não é aceite."
+                        if lang == "pt" else
+                        "The service name is not accepted.")
+                ok, service, error = get_service_status(name)
+                if not ok:
+                    return Reply(
+                        "Não foi possível obter o estado do serviço: " + str(error)
+                        if lang == "pt" else
+                        "Could not read the service status: " + str(error))
+                return Reply(format_services_table([service]))
+            return Reply("O nome do serviço não é aceite."
+                         if lang == "pt" else "The service name is not accepted.")
+
+        ok, services, error = list_services()
+        if not ok:
+            return Reply(
+                "Não foi possível listar os serviços: " + str(error)
+                if lang == "pt" else
+                "Could not list the services: " + str(error))
+        if not services:
+            return Reply("Nenhum serviço encontrado."
+                         if lang == "pt" else "No services found.")
+        return Reply(format_services_table(services))
+
+    def _windows_volumes_reply(self, lang: str) -> Reply:
+        """Read-only volume probe on native Windows (no df, no CIM)."""
+        from .windows_system_actions import format_volumes_table, list_volumes
+        ok, volumes, error = list_volumes()
+        if not ok:
+            return Reply(
+                "Não foi possível listar os volumes: " + str(error)
+                if lang == "pt" else
+                "Could not list the volumes: " + str(error))
+        if not volumes:
+            return Reply("Nenhum volume encontrado."
+                         if lang == "pt" else "No volumes found.")
+        return Reply(format_volumes_table(volumes))
+
+    def _windows_processes_reply(self, lang: str) -> Reply:
+        """Read-only process listing on native Windows (no free -h)."""
+        from .windows_system_actions import format_processes_table, list_processes
+        ok, processes, error = list_processes(limit=30, sort_by="memory")
+        if not ok:
+            return Reply(
+                "Não foi possível listar os processos: " + str(error)
+                if lang == "pt" else
+                "Could not list the processes: " + str(error))
+        header = ("A tabela mostra o working set dos processos.\n\n"
+                  if lang == "pt" else
+                  "The table shows the processes' working set.\n\n")
+        return Reply(header + format_processes_table(processes))
+
     def _services_reply(self, distro: DistroInfo, lang: str, text: str) -> Reply:
+        if self._platform == "windows":
+            return self._windows_services_reply(lang, text)
         svc = distro.svc
         if not svc:
             return Reply(_t(lang, "services", pretty=distro.pretty_name,
@@ -1135,6 +1251,8 @@ class OfflineAssistant:
                           svc=distro.service_manager, cmds=cmds))
 
     def _disk_reply(self, distro: DistroInfo, lang: str) -> Reply:
+        if self._platform == "windows":
+            return self._windows_volumes_reply(lang)
         out = self._run("df -h")
         extra = "\n".join([
             "  df -h",
@@ -1146,6 +1264,8 @@ class OfflineAssistant:
         return Reply(_t(lang, "disk_none", cmds=extra))
 
     def _memory_reply(self, distro: DistroInfo, lang: str) -> Reply:
+        if self._platform == "windows":
+            return self._windows_processes_reply(lang)
         out = self._run("free -h")
         if out:
             return Reply(_t(lang, "memory", out=out))
