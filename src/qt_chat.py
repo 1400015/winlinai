@@ -120,11 +120,16 @@ def should_use_provider(ai_client, config_manager):
                     return True
             except Exception:
                 pass
-        # Check local LLM
+        # A local LLM counts only when it is the configured active provider;
+        # the default base_url with zero keys and no active selection must
+        # not present a provider as ready (the chat would dispatch to a
+        # worker that cannot answer).
         try:
-            base_url = config_manager.get("api.providers.local_llm.base_url")
-            if base_url:
-                return True
+            provider = config_manager.get("api.provider")
+            if provider == "local_llm":
+                base_url = config_manager.get("api.providers.local_llm.base_url")
+                if base_url:
+                    return True
         except Exception:
             pass
     except Exception:
