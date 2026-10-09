@@ -100,6 +100,14 @@ class TestQtLateSignalBinding(unittest.TestCase):
         # The running second request kept its pending state.
         self.assertIsNotNone(self.chat._request_session_id)
         self.assertTrue(self.chat.request_in_flight())
+        # The late signal did not undo the Thinking/Stop state either: the
+        # second worker is alive, the input stays disabled, the button stays
+        # Stop and the thinking indicator stays visible.
+        self.assertTrue(second_thread.is_alive())
+        self.assertFalse(self.chat.input.isEnabled())
+        from src import i18n
+        self.assertEqual(self.chat.send_button.text(), i18n._("Stop"))
+        self.assertTrue(self.chat.status_label.isVisibleTo(self.chat))
         # The late slot did not finish the second request: its answer is
         # still pending and the log holds only the first answer.
         self.assertIn("first answer", self.chat.log.toPlainText())

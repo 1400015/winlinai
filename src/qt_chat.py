@@ -636,7 +636,8 @@ class QtChatWidget(_BaseWidget):
         from . import i18n
         session_id = (token[1] if token is not None
                       else self._request_session_id)
-        self._hide_thinking()
+        if self._token_matches(token):
+            self._hide_thinking()
         self._store_response(text, session_id)
         if self._request_session_is_selected(session_id):
             self._pending_messages.append({"role": "assistant", "content": text})
@@ -655,7 +656,8 @@ class QtChatWidget(_BaseWidget):
         answer = offline_reply_text(self.offline, last_user_message, lang) or ""
         session_id = (token[1] if token is not None
                       else self._request_session_id)
-        self._hide_thinking()
+        if self._token_matches(token):
+            self._hide_thinking()
         self._store_response(answer, session_id)
         if self._request_session_is_selected(session_id):
             self._pending_messages.append({"role": "assistant", "content": answer})
@@ -678,7 +680,8 @@ class QtChatWidget(_BaseWidget):
         from . import i18n
         session_id = (token[1] if token is not None
                       else self._request_session_id)
-        self._hide_thinking()
+        if self._token_matches(token):
+            self._hide_thinking()
         # A cancelled request stores no answer in any session.
         if self._request_session_is_selected(session_id):
             self.append_message(i18n._("System"), i18n._("Request cancelled."))
