@@ -161,16 +161,10 @@ def should_use_provider(ai_client, config_manager):
     # the provider; local mode requires the local settings to name a
     # server; otherwise the configured-key checks below decide.
     if hasattr(ai_client, "active_provider"):
-        try:
-            selected = ai_client.active_provider()
-        except Exception as error:
-            from .ai_client import ProviderNotConfigured
-            if isinstance(error, ProviderNotConfigured):
-                # A refused selection (e.g. remote mode with local_llm
-                # chosen) is a refusal, not offline: raise so the caller
-                # can surface it without touching the offline assistant.
-                raise
-            selected = None
+        # The selection is resolved by the client, the same component the
+        # request itself uses. A refused selection and any unexpected
+        # failure in that resolution both propagate: neither is offline.
+        selected = ai_client.active_provider()
         if selected is None:
             return False
         if selected == "local_llm":
@@ -478,10 +472,11 @@ class QtChatWidget(_BaseWidget):
     def _update_provider_indicator(self):
         """Show which backend is active (AI provider, offline or refused)."""
         from . import i18n
-        from .ai_client import ProviderNotConfigured
         try:
             use_provider = should_use_provider(self.ai_client, self.config)
-        except ProviderNotConfigured as error:
+        except Exception as error:
+            # A refused selection or an unexpected resolution failure is
+            # neither provider nor offline: show the message itself.
             self.setWindowTitle(str(error))
             return
         if use_provider:

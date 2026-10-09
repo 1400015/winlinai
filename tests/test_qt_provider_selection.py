@@ -91,6 +91,34 @@ class TestProviderSelectionFollowsConfig(unittest.TestCase):
         self.assertIsNone(thread, "the request was dispatched to the provider worker")
         self.assertEqual(self.chat.windowTitle(), "Offline mode")
 
+    def test_unexpected_router_failure_is_surfaced_not_offline(self):
+        """An unexpected active_provider failure is neither offline nor swallowed.
+
+        The old router converted any non-refusal exception from the
+        selection into selected=None and returned False, silently sending
+        the request to the offline assistant. The RuntimeError must
+        propagate out of should_use_provider, and the send must surface
+        it in the log without raising, without the offline assistant and
+        without dispatching the provider worker.
+        """
+        self.client.active_provider = Mock(
+            side_effect=RuntimeError("router broke"))
+        with self.assertRaises(RuntimeError):
+            should_use_provider(self.chat.ai_client, self.config)
+        with patch("src.qt_chat.offline_reply_text",
+                   return_value="offline answer") as offline:
+            self.chat.input.setText("hello")
+            self.chat._on_send()
+        thread = self.chat._worker_thread
+        self.addCleanup(self._join, thread)
+        self.assertIn("router broke", self.chat.log.toPlainText())
+        self.assertFalse(offline.called,
+                         "an unexpected failure must not reach the offline assistant")
+        self.assertIsNone(thread,
+                          "an unexpected failure must not dispatch the provider worker")
+        # The indicator shows the failure itself, never "Offline mode".
+        self.assertEqual(self.chat.windowTitle(), "router broke")
+
     def test_remote_mode_with_local_selection_is_refused(self):
         """Remote mode with local_llm selected is a refusal, not offline.
 
