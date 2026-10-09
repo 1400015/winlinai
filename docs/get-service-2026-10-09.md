@@ -16,7 +16,13 @@ O inventário da sonda conserva todos os elementos; o limite de 50 serviços apr
 
 Esta prova portátil verifica a fronteira de serialização. Não comprova tempos ou resultados de `Get-Service` em Windows.
 
-## Aceitação Windows por executar
+## Aceitação Windows comunicada
+
+O utilizador comunicou uma execução do Grok em Windows PowerShell **5.1.26100.9549** sobre o patch aplicado limpo a `92b8833`. Os quatro módulos de teste totalizaram **52 testes, todos aprovados**. A consulta direta devolveu **301 serviços em 1,12 s**; a sonda JSON devolveu os mesmos **301 serviços em 1,38 s**. A consulta individual coincidiu no nome e no texto apresentado. O fixture confirmou zero leituras das dependências, incluindo Unicode.
+
+Esta execução fecha o critério de aceitação nativa da entrega, com evidência externa comunicada pelo utilizador. Não foi repetida no ambiente Linux desta sessão. O patch continua local, sem publicação no GitHub. A prova necessária para avançar no plano foi satisfeita; o instalador continua a exigir a sua própria compilação e aceitação.
+
+### Repetir a aceitação
 
 No checkout desta branch, executar em Windows, com o ambiente do projeto já disponível:
 
@@ -26,4 +32,4 @@ python -m unittest tests.test_windows_foundation_service_probe tests.test_window
 
 O teste nativo exige o motor inbox Windows PowerShell 5.1 Desktop, compara a quantidade e os nomes do inventário real com a consulta direta, verifica os quatro campos e uma consulta individual, e regista os dois tempos. Não fixa a quantidade de serviços nem exige que estados mutáveis permaneçam iguais entre leituras. O teste de serialização exige zero acessos às propriedades relacionadas.
 
-Ambos os módulos já entram no runner Windows pelo prefixo `test_windows_foundation_`. O teste de descoberta garante a inclusão da aceitação 5.1, e o gate recusa skips nativos em Windows. Até essa execução real passar, a aceitação permanece pendente. O instalador fica para depois dessa prova.
+Ambos os módulos já entram no runner Windows pelo prefixo `test_windows_foundation_`. O teste de descoberta garante a inclusão da aceitação 5.1, e o gate recusa skips nativos em Windows. Futuras alterações da sonda devem conservar esta aceitação nativa.
