@@ -30,6 +30,8 @@ As regressões foram reproduzidas antes das correções: os getters PowerShell e
 
 O utilizador comunicou a aceitação de `Get-Service` em Windows PowerShell 5.1.26100.9549: 301 serviços, consulta direta em 1,12 s e sonda em 1,38 s, consulta individual coincidente e zero leituras de dependências; 52 testes aprovados. É evidência externa comunicada, descrita em [get-service-2026-10-09.md](get-service-2026-10-09.md). A validação local do conjunto não constitui uma execução Windows nativa. Os jobs GitHub devem executar a suite Windows, a matriz core, GTK, Qt/Linux e o gate de tipos desta branch.
 
+A primeira execução GitHub expôs uma dependência de sistema ausente no runner Ubuntu: `libEGL.so.1`, necessária para importar QtGui/QtWidgets. Os jobs Qt/Linux e mypy instalam agora `libegl1` explicitamente antes de importar os bindings. O preflight continua a recusar imports falhados.
+
 Com `.[dev,qt]` instalado, os principais comandos são:
 
 ```bash
