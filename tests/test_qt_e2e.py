@@ -357,7 +357,7 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
         chat = QtChatWidget(config, offline, ai_client=None)
         self.addCleanup(chat.close)
 
-        reply = f"Here is the file:\n```\n{target}\nprint('hi')\n```\nDone."
+        reply = f"Here is the file:\n```{target}\nprint('hi')\n```\nDone."
         with patch("src.qt_file_dialogs.confirm_file_write_qt", return_value=True):
             chat._on_provider_response(reply)
 
@@ -380,7 +380,7 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
         chat = QtChatWidget(config, offline, ai_client=None)
         self.addCleanup(chat.close)
 
-        reply = f"```\n{target}\nprint('nope')\n```"
+        reply = f"```{target}\nprint('nope')\n```"
         with patch("src.qt_file_dialogs.confirm_file_write_qt", return_value=False):
             chat._on_provider_response(reply)
 
@@ -407,7 +407,7 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
         chat = QtChatWidget(config, offline, ai_client=None)
         self.addCleanup(chat.close)
 
-        reply = f"```\n{target}\nprint('ignored')\n```"
+        reply = f"```{target}\nprint('ignored')\n```"
         chat._on_provider_response(reply)
         self.assertFalse(target.exists())
 
@@ -425,7 +425,7 @@ class TestQtFileBlocksE2E(TestQtE2EBase):
         self.addCleanup(chat.close)
 
         outside = Path(self.temp_dir.name).parent / "outside_target.py"
-        reply = f"```\n{outside}\nprint('x')\n```"
+        reply = f"```{outside}\nprint('x')\n```"
         with patch("src.qt_file_dialogs.confirm_file_write_qt", return_value=True) as dialog:
             chat._on_provider_response(reply)
         dialog.assert_not_called()
