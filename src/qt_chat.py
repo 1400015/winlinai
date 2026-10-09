@@ -369,7 +369,14 @@ class QtChatWidget(_BaseWidget):
         return Path(filepath).suffix.lower() in image_extensions
 
     def _add_attachment(self, filepath):
-        """Add an image attachment with preview."""
+        """Add an image attachment with preview.
+
+        The image is prepared and validated once, here, with the link
+        refusal running before any read: the frozen ImageAttachment is
+        what the preview renders and what the send later delivers, so a
+        file replaced or deleted at the path after the attach cannot
+        change the payload.
+        """
         from . import i18n
         from pathlib import Path
 
@@ -384,15 +391,22 @@ class QtChatWidget(_BaseWidget):
                 i18n._("Image attachments require an AI provider with vision support."))
             return
 
+        try:
+            attachment = self._prepare_attachment(filepath)
+        except Exception as error:
+            self.append_message(
+                i18n._("System"), str(error) if str(error) else type(error).__name__)
+            return
+
         # Create preview widget
         preview = QtWidgets.QWidget(self.attachment_area)
         preview_layout = QtWidgets.QVBoxLayout(preview)
         preview_layout.setContentsMargins(4, 4, 4, 4)
 
-        # Thumbnail
+        # Thumbnail, rendered from the frozen attachment bytes
         label = QtWidgets.QLabel(preview)
-        pixmap = QtGui.QPixmap(str(path))
-        if not pixmap.isNull():
+        pixmap = QtGui.QPixmap()
+        if pixmap.loadFromData(attachment.data):
             pixmap = pixmap.scaled(64, 64, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                                    QtCore.Qt.TransformationMode.SmoothTransformation)
             label.setPixmap(pixmap)
@@ -414,7 +428,8 @@ class QtChatWidget(_BaseWidget):
         preview_layout.addWidget(remove_btn, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
         self.attachment_layout.addWidget(preview)
-        self._attachments.append({"path": filepath, "widget": preview})
+        self._attachments.append({"path": filepath, "widget": preview,
+                                   "attachment": attachment})
         self.attachment_area.setVisible(True)
 
     def _remove_attachment(self, widget, filepath):
@@ -566,20 +581,22 @@ class QtChatWidget(_BaseWidget):
         except Exception:
             max_messages, max_chars = MAX_CONTEXT_MESSAGES, MAX_CONTEXT_CHARS
         messages = apply_context_budget(self._pending_messages, max_messages, max_chars)
-        # Prepare attachments on the UI thread, before the worker starts: a
-        # preparation failure must be visible and must not let the request
-        # continue as if the image had been sent. The worker receives ready
-        # ImageAttachment objects, never paths.
+        # The attachments were prepared and validated on the UI thread at
+        # attach time; the send revalidates the frozen snapshots and never
+        # reopens the paths, so a file replaced or deleted after the attach
+        # cannot change the bytes that were previewed. The worker receives
+        # the ready ImageAttachment objects, never paths.
         attachments = None
         if self._attachments:
-            from .image_attachments import ImageAttachmentError
+            from .image_attachments import ImageAttachmentError, validate_attachment
             prepared = []
             failure = None
-            for attachment in self._attachments:
+            for entry in self._attachments:
                 try:
-                    prepared.append(self._prepare_attachment(attachment["path"]))
-                except ImageAttachmentError as error:
-                    failure = str(error)
+                    validate_attachment(entry["attachment"])
+                    prepared.append(entry["attachment"])
+                except (ImageAttachmentError, KeyError) as error:
+                    failure = str(error) or type(error).__name__
                     break
             if failure is not None:
                 self._hide_thinking()
