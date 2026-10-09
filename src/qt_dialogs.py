@@ -7,6 +7,7 @@ thin wrappers over the shared ConfigManager and HistoryStore backends.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ try:
 except ImportError:
     QT_AVAILABLE = False
 
-if QT_AVAILABLE:
+if TYPE_CHECKING or QT_AVAILABLE:
     _Slot = QtCore.Slot
 else:
     def _Slot(*args, **kwargs):
@@ -188,13 +189,13 @@ def statistics_rows(ai_client):
 # Dialogs (thin Qt wrappers)
 # ---------------------------------------------------------------------------
 
-if QT_AVAILABLE:
+if TYPE_CHECKING or QT_AVAILABLE:
     _BaseDialog = QtWidgets.QDialog
 else:
     _BaseDialog = object
 
 
-class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
+class QtSettingsDialog(_BaseDialog):
     """API settings: provider selector, key entry, save, plus autostart."""
 
     def __init__(self, config, parent=None):
@@ -219,7 +220,7 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
             self.provider_combo.addItem(label, row["provider"])
         form.addRow(i18n._("Provider"), self.provider_combo)
         self.key_edit = QtWidgets.QLineEdit(api_group)
-        self.key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.key_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         self.key_edit.setPlaceholderText(i18n._("API Key"))
         form.addRow(i18n._("API Key"), self.key_edit)
         api_layout.addLayout(form)
@@ -239,7 +240,7 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
 
         # --- Buttons ---
         buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Close)
+            QtWidgets.QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
@@ -380,8 +381,8 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
                 self, i18n._("Update available"),
                 i18n._("WinLinAI {version} is available. Open the releases page?").format(
                     version=result["version"]),
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-            if reply == QtWidgets.QMessageBox.Yes:
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
                 import webbrowser
                 webbrowser.open(result["url"])
         elif status == "current":
@@ -446,7 +447,7 @@ class QtSettingsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
             self.accept()
 
 
-class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
+class QtHistoryDialog(_BaseDialog):
     """Conversation history: session list, open, new, archive, delete, export."""
 
     def __init__(self, store, parent=None, on_open=None, on_new=None):
@@ -461,7 +462,7 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         self.setMinimumSize(520, 360)
         layout = QtWidgets.QVBoxLayout(self)
         self.list_widget = QtWidgets.QListWidget(self)
-        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         layout.addWidget(self.list_widget, 1)
 
         # Button row 1: New, Open
@@ -488,7 +489,7 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         layout.addLayout(row2)
 
         # Close button
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
@@ -504,13 +505,13 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
             if entry["archived"]:
                 label += " — " + i18n._("archived")
             item = QtWidgets.QListWidgetItem(label)
-            item.setData(QtCore.Qt.UserRole, entry["id"])
-            item.setData(QtCore.Qt.UserRole + 1, entry["archived"])
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, entry["id"])
+            item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, entry["archived"])
             self.list_widget.addItem(item)
 
     def selected_session_id(self):
         item = self.list_widget.currentItem()
-        return item.data(QtCore.Qt.UserRole) if item is not None else None
+        return item.data(QtCore.Qt.ItemDataRole.UserRole) if item is not None else None
 
     def _selected_item(self):
         return self.list_widget.currentItem()
@@ -564,8 +565,8 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
             return
         if self._session_change_refused():
             return
-        session_id = item.data(QtCore.Qt.UserRole)
-        is_archived = bool(item.data(QtCore.Qt.UserRole + 1))
+        session_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        is_archived = bool(item.data(QtCore.Qt.ItemDataRole.UserRole + 1))
         try:
             if hasattr(self.store, "set_archived"):
                 self.store.set_archived(session_id, not is_archived)
@@ -590,12 +591,12 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
             return
         if self._session_change_refused():
             return
-        session_id = item.data(QtCore.Qt.UserRole)
+        session_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
         reply = QtWidgets.QMessageBox.question(
             self, i18n._("Delete conversation"),
             i18n._("Delete this conversation? This cannot be undone."),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-        if reply != QtWidgets.QMessageBox.Yes:
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         try:
             if hasattr(self.store, "delete_session"):
@@ -614,7 +615,7 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         item = self._selected_item()
         if item is None:
             return
-        session_id = item.data(QtCore.Qt.UserRole)
+        session_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
         filename, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, i18n._("Export conversation"),
             "conversation.md", "Markdown (*.md);;JSON (*.json);;Text (*.txt)")
@@ -628,7 +629,7 @@ class QtHistoryDialog(_BaseDialog):  # type: ignore[misc, valid-type]
                 self, i18n._("Export failed"), str(error))
 
 
-class QtStatisticsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
+class QtStatisticsDialog(_BaseDialog):
     """Usage statistics: token counts by provider, with reset."""
 
     def __init__(self, ai_client, parent=None):
@@ -655,7 +656,7 @@ class QtStatisticsDialog(_BaseDialog):  # type: ignore[misc, valid-type]
         reset_btn.setStyleSheet("margin-top: 10px;")
         layout.addWidget(reset_btn)
 
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
 

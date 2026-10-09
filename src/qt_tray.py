@@ -15,6 +15,7 @@ Parity with the GTK tray (src/tray_icon.py):
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -87,13 +88,13 @@ def expert_mode_enabled(config_manager, default=False):
         return default
 
 
-if QT_AVAILABLE:
+if TYPE_CHECKING or QT_AVAILABLE:
     _BaseTray = QtWidgets.QSystemTrayIcon
 else:
     _BaseTray = object
 
 
-class QtTrayIcon(_BaseTray):  # type: ignore[misc, valid-type]
+class QtTrayIcon(_BaseTray):
     """System tray icon with drawer toggle on left click.
 
     Menu parity with the GTK tray: Show/Hide, Expert Mode (checkbox),
@@ -107,8 +108,8 @@ class QtTrayIcon(_BaseTray):  # type: ignore[misc, valid-type]
         self.config = config_manager
         self.shell = shell_window
         self._syncing_expert = False
-        self.icon = self._load_icon()
-        self.setIcon(self.icon)
+        self._tray_icon = self._load_icon()
+        self.setIcon(self._tray_icon)
         self.setToolTip(self._tooltip_text())
         self._build_menu()
         self.activated.connect(self._on_activated)

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +177,25 @@ def should_use_provider(ai_client, config_manager):
     return False
 
 
-if QT_AVAILABLE:
+if TYPE_CHECKING or QT_AVAILABLE:
     _BaseWidget = QtWidgets.QWidget
     _Slot = QtCore.Slot
+
+    class _AttachmentLog(QtWidgets.QPlainTextEdit):
+        """A log that delegates attachment events without replacing Qt methods."""
+
+        def __init__(self, parent: QtWidgets.QWidget,
+                     on_drag_enter: Callable[[QtGui.QDragEnterEvent], None],
+                     on_drop: Callable[[QtGui.QDropEvent], None]):
+            super().__init__(parent)
+            self._on_drag_enter = on_drag_enter
+            self._on_drop = on_drop
+
+        def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+            self._on_drag_enter(event)
+
+        def dropEvent(self, event: QtGui.QDropEvent) -> None:
+            self._on_drop(event)
 
     class _ProviderWorker(QtCore.QObject):
         """Runs a provider request off the GUI thread and reports via signals.
@@ -220,7 +236,7 @@ else:
         pass
 
 
-class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
+class QtChatWidget(_BaseWidget):
     """Message log plus input line, driven by AI provider or offline assistant."""
 
     send_requested = QtCore.Signal(str) if QT_AVAILABLE else None
@@ -262,13 +278,11 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         self.status_label.setStyleSheet("color: #888; font-style: italic; padding: 4px;")
         layout.addWidget(self.status_label)
 
-        self.log = QtWidgets.QPlainTextEdit(self)
+        self.log = _AttachmentLog(self, self._on_drag_enter, self._on_drop)
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(4096)
         # Enable drag & drop for images
         self.log.setAcceptDrops(True)
-        self.log.dragEnterEvent = self._on_drag_enter
-        self.log.dropEvent = self._on_drop
         layout.addWidget(self.log, 1)
 
         # Attachment preview area (hidden by default)
@@ -375,8 +389,8 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         label = QtWidgets.QLabel(preview)
         pixmap = QtGui.QPixmap(str(path))
         if not pixmap.isNull():
-            pixmap = pixmap.scaled(64, 64, QtCore.Qt.KeepAspectRatio,
-                                   QtCore.Qt.SmoothTransformation)
+            pixmap = pixmap.scaled(64, 64, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                                   QtCore.Qt.TransformationMode.SmoothTransformation)
             label.setPixmap(pixmap)
         else:
             label.setText("🖼️")
@@ -384,7 +398,7 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
 
         # Filename
         name_label = QtWidgets.QLabel(path.name[:15], preview)
-        name_label.setAlignment(QtCore.Qt.AlignCenter)
+        name_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         name_label.setStyleSheet("font-size: 9px;")
         preview_layout.addWidget(name_label)
 
@@ -393,7 +407,7 @@ class QtChatWidget(_BaseWidget):  # type: ignore[misc, valid-type]
         remove_btn.setMaximumWidth(20)
         remove_btn.setMaximumHeight(20)
         remove_btn.clicked.connect(lambda: self._remove_attachment(preview, filepath))
-        preview_layout.addWidget(remove_btn, alignment=QtCore.Qt.AlignRight)
+        preview_layout.addWidget(remove_btn, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
         self.attachment_layout.addWidget(preview)
         self._attachments.append({"path": filepath, "widget": preview})
