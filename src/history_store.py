@@ -349,10 +349,14 @@ class HistoryStore:
         update_json publishes the document and only then syncs the directory.
         When that sync fails, JsonWriteCommittedError carries the published
         document: the disk already shows the new active session while the
-        in-memory id still holds the old one. Write the published document
-        back with the in-memory active id restored (the new session stays in
-        the file, just not active) and let the exception propagate so callers
-        like QtChatWidget.clear_conversation() keep the screen untouched.
+        in-memory id still holds the old one. When the in-memory id still
+        names an existing, unarchived session, write the published document
+        back with that id restored (the new session stays in the file, just
+        not active). When it no longer does (it was archived or deleted by
+        this very transaction), keep the valid id _ensure_active already
+        published and adopt it in memory. The exception still propagates so
+        callers like QtChatWidget.clear_conversation() keep the screen
+        untouched.
         """
         previous_active = self._session_id
         try:
@@ -361,15 +365,33 @@ class HistoryStore:
             published = error.value
             if (isinstance(published, dict)
                     and "active_session_id" in published
-                    and "sessions" in published
-                    and published["active_session_id"] != previous_active):
-                document = dict(published)
-                document["active_session_id"] = previous_active
-                try:
-                    atomic_json_write(self.path, document,
-                                      max_bytes=MAX_HISTORY_BYTES)
-                except Exception:
-                    pass
+                    and "sessions" in published):
+                session = next(
+                    (candidate for candidate in published["sessions"]
+                     if candidate.get("id") == previous_active
+                     and not candidate.get("archived")),
+                    None)
+                if session is not None and published["active_session_id"] != previous_active:
+                    document = dict(published)
+                    document["active_session_id"] = previous_active
+                    try:
+                        atomic_json_write(self.path, document,
+                                          max_bytes=MAX_HISTORY_BYTES)
+                        disk_active = previous_active
+                    except JsonWriteCommittedError as retry_error:
+                        # The retry published the reconciled id before its
+                        # own sync failed; that is what the disk now shows.
+                        disk_active = retry_error.value.get("active_session_id")
+                    except OSError:
+                        # The retry failed before publishing: the disk still
+                        # shows the document the failed transaction published.
+                        disk_active = published["active_session_id"]
+                    self._session_id = disk_active
+                elif session is None:
+                    # The previous active session was archived or deleted by
+                    # this very transaction: keep the valid id _ensure_active
+                    # published instead of restoring the dead reference.
+                    self._session_id = published["active_session_id"]
             raise
 
     def _transaction(self, action):
