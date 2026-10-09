@@ -576,7 +576,17 @@ class QtChatWidget(_BaseWidget):
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         answer = offline_reply_text(self.offline, text, lang) or ""
         self._hide_thinking()
+        session_id = self._request_session_id
         self._store_response(answer)
+        # Persist the guide position in the session that received the
+        # answer, the same session _store_response writes to: a late
+        # answer from another session must not advance this one's guide.
+        if self.history_store is not None and self.offline is not None:
+            try:
+                self.history_store.set_diagnostic_state(
+                    self.offline.diagnostic_state(), session_id=session_id)
+            except Exception as error:
+                logger.warning("History write failed: %s", type(error).__name__)
         self._pending_messages.append({"role": "assistant", "content": answer})
         self._finish_request()
         self.append_message(i18n._("AI"), answer)
@@ -894,6 +904,25 @@ class QtChatWidget(_BaseWidget):
         """Slot for response_received signal."""
         pass
 
+    def _sync_assistant_session(self, session_id=None):
+        """Bind the offline assistant to the session that is now visible.
+
+        The assistant keeps the guide continuation in memory; without this
+        rebinding a guide started in one conversation would keep advancing
+        in the next one. A stored {id, step} state is restored through the
+        assistant's own validation; None or a refused value resets the
+        continuation so the previous guide leaves memory.
+        """
+        if self.history_store is None or self.offline is None:
+            return
+        try:
+            state = self.history_store.get_diagnostic_state(session_id)
+        except Exception as error:
+            logger.warning("History read failed: %s", type(error).__name__)
+            state = None
+        if state is None or not self.offline.restore_diagnostic(state):
+            self.offline.reset_conversation()
+
     def load_session(self, session_id=None):
         """Render the active (or given) session's stored messages."""
         if self.history_store is None:
@@ -909,6 +938,7 @@ class QtChatWidget(_BaseWidget):
         except Exception as error:
             logger.warning("History read failed: %s", type(error).__name__)
             return
+        self._sync_assistant_session(session_id)
         self.log.clear()
         self._log_chars = 0
         self._pending_messages = []
@@ -953,6 +983,10 @@ class QtChatWidget(_BaseWidget):
             except Exception as error:
                 logger.warning("Could not create new session: %s", type(error).__name__)
                 return
+            self._sync_assistant_session()
+        else:
+            if self.offline is not None:
+                self.offline.reset_conversation()
         self.log.clear()
         self._log_chars = 0
         self._pending_messages = []
