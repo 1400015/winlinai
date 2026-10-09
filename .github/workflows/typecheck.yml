@@ -8,13 +8,29 @@ on:
 jobs:
   typecheck:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target-platform: [linux, win32]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1
       - name: Install development dependencies
-        run: python -m pip install ".[dev]"
+        run: python -m pip install ".[dev,qt]"
+      - name: Require real Qt bindings and record analyzer versions
+        run: |
+          python -c "import platform, PySide6; from PySide6 import QtCore, QtGui, QtWidgets; print('Python', platform.python_version(), 'PySide6', PySide6.__version__, 'Qt', QtCore.qVersion())"
+          python -m mypy --version
       - name: Check the selected core modules
         # The exact module list and pinned analyzer live in pyproject.toml.
-        run: python -m mypy --config-file pyproject.toml
+        run: python -m mypy --config-file pyproject.toml --platform ${{ matrix.target-platform }}
+      - name: Check Qt API and optional dependency compatibility
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest tests.test_qt_type_compatibility -v

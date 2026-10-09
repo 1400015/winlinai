@@ -5,7 +5,12 @@ PySide6 is an optional dependency: when absent, ``available()`` is False and
 """
 import logging
 import sys
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .qt_chat import QtChatWidget
+    from .qt_tray import QtTrayIcon
+    from .history_store import HistoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +43,13 @@ def missing_dependency_message() -> str:
     )
 
 
-if QT_AVAILABLE:
+if TYPE_CHECKING or QT_AVAILABLE:
     _BaseShell = QtWidgets.QMainWindow
 else:
     _BaseShell = object
 
 
-class QtShell(_BaseShell):  # type: ignore[misc, valid-type]
+class QtShell(_BaseShell):
     """Qt main window: status line plus the chat widget (phase 4b)."""
 
     def __init__(self, config_manager, platform_name, history_path=None):
@@ -54,15 +59,15 @@ class QtShell(_BaseShell):  # type: ignore[misc, valid-type]
         self.config = config_manager
         self.platform_name = platform_name
         self.history_path = history_path
-        self.chat = None
-        self.history_store = None
-        self.tray_icon: Optional[Any] = None
+        self.chat: Optional[QtChatWidget] = None
+        self.history_store: Optional[HistoryStore] = None
+        self.tray_icon: Optional[QtTrayIcon] = None
         self.setWindowTitle("Linux AI Assistant")
         self.resize(*MIN_WINDOW_SIZE)
         central = QtWidgets.QWidget(self)
         layout = QtWidgets.QVBoxLayout(central)
         status = QtWidgets.QLabel(self._status_text(), central)
-        status.setAlignment(QtCore.Qt.AlignCenter)
+        status.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(status)
         self._build_chat(layout)
         self.setCentralWidget(central)

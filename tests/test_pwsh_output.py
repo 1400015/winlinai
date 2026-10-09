@@ -1,6 +1,7 @@
 """Tests for PowerShell output normalization (src/platform/pwsh_output.py)."""
 import base64
 import unittest
+from unittest.mock import Mock
 
 from src.platform.pwsh_output import (
     wrap_cmdlet_json,
@@ -27,13 +28,13 @@ class TestWrapCmdletJson(unittest.TestCase):
                          ("powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"))
         script = _decode_script(argv)
         # A bare invocation, never the quoted string literal.
-        self.assertIn("Get-Service | ConvertTo-Json -Compress -Depth 10", script)
+        self.assertIn("Get-Service | Select-Object Name,DisplayName,", script)
         self.assertNotIn("'Get-Service'", script)
 
     def test_cmdlet_with_parameters(self):
         argv = wrap_cmdlet_json(["Get-Service", "-Name", "wuauserv"])
         script = _decode_script(argv)
-        self.assertIn("Get-Service -Name 'wuauserv' | ConvertTo-Json -Compress -Depth 10", script)
+        self.assertIn("Get-Service -Name 'wuauserv' | Select-Object", script)
         self.assertNotIn("'Get-Service'", script)
 
     def test_quotes_are_escaped(self):
@@ -41,7 +42,16 @@ class TestWrapCmdletJson(unittest.TestCase):
         script = _decode_script(argv)
         # The interior apostrophe doubles (it's -> it''s) and the value
         # stays a quoted literal.
-        self.assertIn("Get-Service -Name 'it''s' | ConvertTo-Json", script)
+        self.assertIn("Get-Service -Name 'it''s' | Select-Object", script)
+
+    def test_service_projection_is_case_insensitive(self):
+        script = _decode_script(wrap_cmdlet_json(["get-service", "-Name", "bits"]))
+        self.assertIn("get-service -Name 'bits' | Select-Object", script)
+
+    def test_other_cmdlets_keep_existing_serialization(self):
+        script = _decode_script(wrap_cmdlet_json(["Get-Process", "-Name", "python"]))
+        self.assertIn("Get-Process -Name 'python' | ConvertTo-Json -Compress -Depth 10", script)
+        self.assertNotIn("Select-Object", script)
 
     def test_empty_argv_raises(self):
         with self.assertRaises(ValueError):
@@ -260,6 +270,13 @@ class TestNormalizeOutput(unittest.TestCase):
 
 
 class TestRunProbe(unittest.TestCase):
+    def test_service_timeout_and_output_limit_are_not_increased(self):
+        runner = Mock(return_value=(124, "", "probe timed out"))
+        result = run_probe(["Get-Service"], runner=runner)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "probe timed out")
+        self.assertEqual(runner.call_args.kwargs, {"timeout": 30, "limit": 1024 * 1024})
+
     def test_rejects_invalid_cmdlet(self):
         result = run_probe(["Remove-Item", "-Path", "x"])
         self.assertFalse(result["ok"])

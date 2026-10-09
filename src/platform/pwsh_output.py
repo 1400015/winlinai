@@ -27,14 +27,16 @@ def wrap_cmdlet_json(cmdlet_argv):
     """Wrap a validated cmdlet argv so its output is JSON.
 
     Returns an argv list for ``powershell -EncodedCommand`` that pipes the
-    cmdlet output through ``ConvertTo-Json -Compress -Depth 10``. The cmdlet
+    cmdlet output through ``ConvertTo-Json``. Get-Service projects only the
+    four fields consumed by normalize_service before serialization, avoiding
+    traversal of related services; other cmdlets retain depth 10. The cmdlet
     argv must already be validated by
     :func:`shell_pwsh.validate_pwsh_arguments`.
 
     Example:
         wrap_cmdlet_json(["Get-Service", "-Name", "wuauserv"])
         → powershell -EncodedCommand <base64 of
-          "Get-Service -Name 'wuauserv' | ConvertTo-Json -Compress -Depth 10">
+          "Get-Service -Name 'wuauserv' | Select-Object ... | ConvertTo-Json ...">
     """
     import re as _re
     from .shell_pwsh import launch_script
@@ -59,7 +61,15 @@ def wrap_cmdlet_json(cmdlet_argv):
             escaped = arg.replace("'", "''")
             parts.append("'{}'".format(escaped))
     cmdlet = " ".join(parts)
-    script = "{} | ConvertTo-Json -Compress -Depth 10".format(cmdlet)
+    if cmdlet_name.lower() == "get-service":
+        # ServiceController exposes getters for dependency graphs and other
+        # SCM queries. Only read the fields that the assistant actually uses.
+        script = (cmdlet + " | Select-Object Name,DisplayName,"
+                  "@{Name='Status';Expression={[string]$_.Status}},"
+                  "@{Name='StartType';Expression={[string]$_.StartType}}"
+                  " | ConvertTo-Json -Compress -Depth 2")
+    else:
+        script = "{} | ConvertTo-Json -Compress -Depth 10".format(cmdlet)
     return launch_script(script)
 
 

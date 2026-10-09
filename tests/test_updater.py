@@ -210,11 +210,18 @@ class TestVerifyChecksum(unittest.TestCase):
 
 class TestGetUpdateDownloadsDir(unittest.TestCase):
     def test_creates_directory(self):
-        path = get_update_downloads_dir()
-        self.assertTrue(path.exists())
-        self.assertTrue(path.is_dir())
-        self.assertIn("WinLinAI", str(path))
-        self.assertIn("Updates", str(path))
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_home = Path(directory)
+            with patch('src.updater.Path.home', return_value=temporary_home):
+                path = get_update_downloads_dir()
+            self.assertTrue(path.exists())
+            self.assertTrue(path.is_dir())
+            self.assertIn(temporary_home, path.parents)
+            self.assertIn("WinLinAI", str(path))
+            self.assertIn("Updates", str(path))
 
 
 class TestConstants(unittest.TestCase):

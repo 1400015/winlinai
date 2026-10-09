@@ -134,5 +134,5 @@ show_error_codes = true
 
 # Ignore missing imports for optional/platform-specific dependencies
 [[tool.mypy.overrides]]
-module = ["PySide6.*", "winreg", "gi.*", "PIL.*"]
+module = ["winreg", "gi.*", "PIL.*"]
 ignore_missing_imports = true

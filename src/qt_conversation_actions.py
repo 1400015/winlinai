@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -142,10 +142,8 @@ def summarize_messages(messages: List[Dict], max_chars: int = 500) -> str:
 # Qt wrappers
 # ---------------------------------------------------------------------------
 
-from typing import Any, Type
-
-if QT_AVAILABLE:
-    _BaseMenu: Type[Any] = QtWidgets.QMenu
+if TYPE_CHECKING or QT_AVAILABLE:
+    _BaseMenu = QtWidgets.QMenu
 else:
     _BaseMenu = object
 
@@ -234,7 +232,7 @@ def add_context_menu_to_chat(chat_widget):
     """Add a context menu to the chat log widget."""
     if not QT_AVAILABLE:
         return
-    chat_widget.log.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+    chat_widget.log.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
     menu = QtConversationMenu(chat_widget, chat_widget.log)
     chat_widget.log.customContextMenuRequested.connect(
         lambda pos: menu.exec(chat_widget.log.mapToGlobal(pos)))
