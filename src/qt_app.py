@@ -71,7 +71,15 @@ class QtShell(_BaseShell):
         layout.addWidget(status)
         self._build_chat(layout)
         self.setCentralWidget(central)
+        self._apply_window_icon()
         self._build_tray()
+
+    def _apply_window_icon(self):
+        """Use the same bundled icon for the window, taskbar and tray."""
+        from .qt_tray import load_window_icon
+        icon = load_window_icon()
+        if icon is not None and not icon.isNull():
+            self.setWindowIcon(icon)
 
     def open_settings_dialog(self):
         from .qt_dialogs import QT_AVAILABLE as DIALOGS_QT_AVAILABLE, QtSettingsDialog

@@ -430,6 +430,9 @@ class QtSettingsDialog(_BaseDialog):
             i18n._("Status: {}").format(i18n._(autostart_status_label(status))))
         if result is None:
             logger.warning("Autostart change failed")
+            self.autostart_check.blockSignals(True)
+            self.autostart_check.setChecked(bool(status))
+            self.autostart_check.blockSignals(False)
 
     def selected_provider(self):
         return self.provider_combo.currentData()

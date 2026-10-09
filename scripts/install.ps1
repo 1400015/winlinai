@@ -18,7 +18,7 @@ $pythonExe = (Get-Command python).Source
 $command = '"{0}" -m src.app --ui qt' -f $pythonExe
 
 if ($EnableAutostart) {
-    & $pythonExe -c "from src.windows_autostart import apply_autostart, autostart_command, windows_backends; backends = windows_backends(); print(apply_autostart(True, autostart_command(r'$pythonExe', r'$ProjectDir'), *backends))" 2>$null
+    & $pythonExe -c "from src.windows_autostart import set_autostart; raise SystemExit(0 if set_autostart(True) else 1)" 2>$null
     if ($LASTEXITCODE -ne 0) {
         # Fall back to direct Registry writes when the package is not importable.
         $key = "Software\Microsoft\Windows\CurrentVersion\Run"

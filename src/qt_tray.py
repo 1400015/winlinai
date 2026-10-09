@@ -9,12 +9,13 @@ Linux cannot provide. The enable/disable decision reuses the shared
 Parity with the GTK tray (src/tray_icon.py):
 - Expert Mode checkbox (checkable QAction)
 - Statistics menu item
-- Bundled SVG icon from assets/
+- Bundled window icon: Windows .ico, then the shared SVG resolver
 - Platform-aware tooltip
 """
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 from pathlib import Path
 
@@ -32,12 +33,75 @@ TOGGLE_REASONS = frozenset(("Trigger", "MiddleClick"))
 ICON_NAME = "io.github.linux_ai_assistant"
 
 
+def qt_icon_candidates(platform, checkout_root, prefix, svg_path, icon_name=ICON_NAME):
+    """Icon files for the Qt window and tray, first match wins.
+
+    Windows prefers the existing .ico (checkout, then the installed wheel)
+    because the taskbar loads that format without an SVG plugin. Every
+    platform then uses the SVG ``desktop_icons.icon_path`` already resolved:
+    checkout, installed prefix, or Flatpak. GTK keeps its own resolver.
+    """
+    candidates = []
+    if platform == "win32":
+        candidates.append(Path(checkout_root) / "assets" / (icon_name + ".ico"))
+        candidates.append(
+            Path(prefix) / "share" / "linux-ai-assistant" / (icon_name + ".ico"))
+    if svg_path is not None:
+        candidates.append(Path(svg_path))
+    return candidates
+
+
 def _bundled_icon_path():
-    """Locate the bundled SVG icon (checkout or installed wheel)."""
-    candidates = [
-        Path(__file__).resolve().parents[1] / "assets" / (ICON_NAME + ".svg"),
-    ]
-    return next((p for p in candidates if p.is_file()), None)
+    """Locate the Qt icon in a checkout or an installed wheel."""
+    from .desktop_icons import icon_path
+    checkout = Path(__file__).resolve().parents[1]
+    return next(
+        (path for path in qt_icon_candidates(
+            sys.platform, checkout, sys.prefix, icon_path())
+         if path.is_file()),
+        None)
+
+
+def _icon_from_svg(path):
+    """Rasterize an SVG after the application already exists.
+
+    ``QIcon(path)`` leaves an SVG empty when the icon engine was not loaded
+    before ``QApplication``. ``QSvgRenderer`` uses the imported module directly.
+    """
+    try:
+        from PySide6 import QtCore, QtSvg
+    except ImportError:
+        return None
+    renderer = QtSvg.QSvgRenderer(str(path))
+    if not renderer.isValid():
+        return None
+    size = renderer.defaultSize()
+    if not size.isValid() or size.isEmpty():
+        size = QtCore.QSize(128, 128)
+    image = QtGui.QImage(size, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = QtGui.QPainter(image)
+    try:
+        renderer.render(painter)
+    finally:
+        painter.end()
+    if image.isNull():
+        return None
+    return QtGui.QIcon(QtGui.QPixmap.fromImage(image))
+
+
+def load_window_icon():
+    """QIcon for the Qt window and tray, or None when Qt is unavailable."""
+    if not QT_AVAILABLE:
+        return None
+    path = _bundled_icon_path()
+    if path is None:
+        return QtGui.QIcon()
+    if path.suffix.lower() == ".svg":
+        rendered = _icon_from_svg(path)
+        if rendered is not None:
+            return rendered
+    return QtGui.QIcon(str(path))
 
 
 def _platform_label(platform_name):
@@ -115,12 +179,9 @@ class QtTrayIcon(_BaseTray):
         self.activated.connect(self._on_activated)
 
     def _load_icon(self):
-        """Load the bundled SVG icon, falling back to the window icon."""
-        icon = QtGui.QIcon()
-        path = _bundled_icon_path()
-        if path is not None:
-            icon = QtGui.QIcon(str(path))
-        if icon.isNull():
+        """Load the bundled icon, falling back to the theme or window icon."""
+        icon = load_window_icon()
+        if icon is None or icon.isNull():
             icon = QtGui.QIcon.fromTheme("linux-ai-assistant")
         if icon.isNull():
             icon = self.shell.windowIcon()

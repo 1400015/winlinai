@@ -23,16 +23,37 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def autostart_command(powershell_exe, script_path, ui="qt"):
-    """Build the launcher command stored in the Registry Run key.
+    """Build the checkout launcher stored in the Registry Run key.
 
     The Registry Run key starts a process without the project working
-    directory, so the value launches ``run.ps1`` (which sets it) through
+    directory, so a checkout launches ``run.ps1`` (which sets it) through
     PowerShell instead of calling ``python -m src.app`` directly.
     """
     if ui not in ("qt", "gtk"):
         ui = "qt"
     return '"{}" -WindowStyle Hidden -ExecutionPolicy Bypass -File "{}" -Ui {}'.format(
         powershell_exe, script_path, ui)
+
+
+def interpreter_autostart_command(python_exe, ui="qt"):
+    """Launch an installed copy with the interpreter that is already running.
+
+    An installed wheel has no ``run.ps1``. ``python -m src.app`` does not
+    need the project directory because the package is on that interpreter's
+    module path.
+    """
+    if ui not in ("qt", "gtk"):
+        ui = "qt"
+    return '"{}" -m src.app --ui {}'.format(python_exe, ui)
+
+
+def resolve_autostart_command(powershell_exe, script_path, python_exe, ui="qt"):
+    """Checkout keeps ``run.ps1``. An install uses the running interpreter."""
+    if script_path:
+        return autostart_command(powershell_exe, script_path, ui)
+    if python_exe:
+        return interpreter_autostart_command(python_exe, ui)
+    return None
 
 
 def autostart_should_update(current_value, desired_command):
@@ -149,10 +170,11 @@ def set_autostart(enabled, script_path=None, ui="qt", read_value=None,
         read_value, write_value, delete_value = backends
     if script_path is None:
         script_path = default_script_path()
-    if script_path is None:
-        logger.error("run.ps1 not found; cannot configure autostart")
+    command = resolve_autostart_command(
+        default_powershell_exe(), script_path, sys.executable, ui)
+    if command is None:
+        logger.error("Cannot configure autostart without a launcher")
         return None
-    command = autostart_command(default_powershell_exe(), script_path, ui)
     try:
         return apply_autostart(enabled, command, read_value, write_value, delete_value)
     except Exception as error:
