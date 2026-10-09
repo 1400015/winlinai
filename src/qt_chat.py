@@ -846,6 +846,7 @@ class QtChatWidget(_BaseWidget):
                 self.history_store.create_session(select=True)
             except Exception as error:
                 logger.warning("Could not create new session: %s", type(error).__name__)
+                return
         self.log.clear()
         self._log_chars = 0
         self._pending_messages = []
