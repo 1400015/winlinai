@@ -38,10 +38,10 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 
-; Output
-OutputDir=installer\output
+; Output. Paths are relative to this script, which lives in installer\.
+OutputDir=output
 OutputBaseFilename=WinLinAI-{#MyAppVersion}-Setup
-SetupIconFile=assets\io.github.linux_ai_assistant.ico
+SetupIconFile=..\assets\io.github.linux_ai_assistant.ico
 
 ; Compression
 Compression=lzma2
@@ -64,7 +64,7 @@ Name: "startupicon"; Description: "Start WinLinAI when Windows starts"; GroupDes
 
 [Files]
 ; Application files (dist/ will be created by the build script)
-Source: "dist\winlinai\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "pyinstaller\dist\winlinai\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; Visual C++ Redistributable (if needed for Python)
 ; Source: "installer\vcredist_x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: NeedsVCRedist

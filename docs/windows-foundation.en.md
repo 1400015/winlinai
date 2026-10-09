@@ -35,7 +35,7 @@ be required to start the Qt interface.
 
 ## Scope of this stage
 
-Status: **I** = implemented, **INT** = integrated in a real caller, **CI** = tested on Windows CI, **AR** = accepted on a real machine (pending).
+Status: **I** = implemented, **INT** = integrated in a real caller, **CI** = tested on Windows CI, **AR** = accepted on a real machine.
 
 | Capability | Status | Notes |
 | --- | --- | --- |
@@ -48,7 +48,7 @@ Status: **I** = implemented, **INT** = integrated in a real caller, **CI** = tes
 | Tray and autostart | I/INT/CI | Expert Mode, Statistics, SVG icon, platform tooltip, autostart checkbox in Settings |
 | Updater | I/INT/CI | Update check in Settings and on startup; no auto-download |
 | File writes (file blocks) | I/INT/CI | Expert-mode flow: parse, preview, confirmation, atomic write with backup |
-| Windows installer | I/CI | PowerShell scripts fixed and validated (`tests/test_installer_assets.py`); `.ico` generated; .msi/.exe packaging pending |
+| Windows installer | I/CI/AR | Scripts validated by `tests/test_installer_assets.py`. The Inno Setup installer `WinLinAI-1.4.2-Setup.exe` (1.4.2) was compiled, installed, and started on this machine: the window opened and the process was then closed. No .msi was produced. |
 
 Commands remain subject to local policy. Text from a model or documentation
 does not authorize execution. Privileged Linux operations, Linux package
@@ -219,7 +219,7 @@ After an honest code self-assessment, four improvement phases were executed:
 ## Still missing
 
 - **Acceptance on a real Windows machine**: validate tray, autostart, icons and updater with a graphical session (CI covers widget construction and behavior, not desktop interaction)
-- **.msi/.exe packaging**: Inno Setup/NSIS (scripts and assets already validated by tests)
+- **.msi packaging**: not produced. The Inno Setup installer `WinLinAI-1.4.2-Setup.exe` (1.4.2) was compiled, installed, and started on this machine: the window opened and the process was then closed.
 - **Qt conversation management consolidation**: complete parity with GTK (sessions, export, search)
 - **Parity with GTK actions**: `conversation_actions` and `service_actions` (file blocks already integrated; winget via `windows_system_actions`)
 - **Screen capture**: Windows equivalent to the Wayland portal is implemented (`src/windows_screenshot.py`); real-machine trial pending

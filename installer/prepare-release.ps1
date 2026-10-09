@@ -45,7 +45,8 @@ $testResult = & python -m pytest tests/ -q --ignore=tests/test_action_infrastruc
 $testExitCode = $LASTEXITCODE
 Write-Host $testResult
 if ($testExitCode -ne 0) {
-    Write-Warning "Some tests failed, but continuing with release preparation"
+    Write-Error "Tests failed"
+    exit 1
 }
 
 # Step 3: Build wheel
@@ -64,7 +65,8 @@ $buildInstaller = Read-Host "Build Windows installer? (y/n)"
 if ($buildInstaller -eq "y") {
     & powershell -ExecutionPolicy Bypass -File installer/build-installer.ps1 -Clean
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Installer build failed, continuing without it"
+        Write-Error "Installer build failed"
+        exit 1
     }
 }
 
