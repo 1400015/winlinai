@@ -209,8 +209,31 @@ def atomic_json_write(path, value, max_bytes=None):
         raise
 
 
+def _target_bytes(path, max_bytes=None):
+    """Read the target's raw bytes for the external-writer re-check."""
+    try:
+        descriptor = open_regular(path)
+    except FileNotFoundError:
+        return None
+    try:
+        with os.fdopen(descriptor, 'rb') as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError('Bounded JSON input must be a regular file')
+            return stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+    finally:
+        pass
+
+
 def update_json(path, update, default, max_bytes=None):
-    """Read/modify/replace under one inter-process lock; preserve corrupt input."""
+    """Read/modify/replace under one inter-process lock; preserve corrupt input.
+
+    A writer that never takes the sidecar lock can replace the target's
+    bytes while the update callback runs inside the transaction; the
+    publication would then overwrite that external write while reporting
+    success. The bytes read before the callback are re-checked before
+    publishing: when they changed, the transaction is refused and the
+    external bytes stand.
+    """
     path = Path(path)
     published = False
     published_value = None
@@ -241,7 +264,10 @@ def update_json(path, update, default, max_bytes=None):
                         pass
                     raise
                 previous = default
+            before = _target_bytes(path, max_bytes)
             result = update(previous)
+            if _target_bytes(path, max_bytes) != before:
+                raise OSError('Target changed during the transaction; external bytes preserved')
             try:
                 if max_bytes is None:
                     atomic_json_write(path, result)
