@@ -75,10 +75,12 @@ class TestProviderSelectionFollowsConfig(unittest.TestCase):
         self.assertTrue(should_use_provider(self.chat.ai_client, self.config))
 
     def test_next_request_matches_the_visible_offline_selection(self):
-        """End to end: the send itself goes offline after the switch."""
+        """End to end: the send itself goes offline after the switch.
+
+        The send itself updates the indicator: the title must reflect the
+        selection without any manual indicator call before checking it.
+        """
         self.config.set("assistance.mode", "offline")
-        self.chat._update_provider_indicator()
-        self.assertEqual(self.chat.windowTitle(), "Offline mode")
         with patch("src.qt_chat.offline_reply_text",
                    return_value="offline answer") as offline:
             self.chat.input.setText("hello")
@@ -87,12 +89,35 @@ class TestProviderSelectionFollowsConfig(unittest.TestCase):
         thread = self.chat._worker_thread
         self.addCleanup(self._join, thread)
         self.assertIsNone(thread, "the request was dispatched to the provider worker")
+        self.assertEqual(self.chat.windowTitle(), "Offline mode")
 
     def test_remote_mode_with_local_selection_is_refused(self):
-        """Remote mode with local_llm selected is a refused provider, not offline."""
+        """Remote mode with local_llm selected is a refusal, not offline.
+
+        active_provider() raises ProviderNotConfigured; the old router
+        swallowed it into False and the request fell to the offline
+        assistant. The refusal must be visible: no offline call, no
+        provider worker, and a system line in the log.
+        """
+        from src.ai_client import ProviderNotConfigured
         self.config.set("assistance.mode", "remote")
         self.config.set("api.default_provider", "local_llm")
-        self.assertFalse(should_use_provider(self.chat.ai_client, self.config))
+        with self.assertRaises(ProviderNotConfigured):
+            should_use_provider(self.chat.ai_client, self.config)
+        with patch("src.qt_chat.offline_reply_text",
+                   return_value="offline answer") as offline:
+            self.chat.input.setText("hello")
+            self.chat._on_send()
+        thread = self.chat._worker_thread
+        self.addCleanup(self._join, thread)
+        self.assertFalse(offline.called, "a refusal must not reach the offline assistant")
+        self.assertIsNone(thread, "a refusal must not dispatch the provider worker")
+        log = self.chat.log.toPlainText()
+        self.assertIn("Choose a remote provider", log)
+        self.assertNotIn("offline answer", log)
+        # The send itself refreshes the indicator: the title no longer
+        # claims "AI Provider mode" after the switch.
+        self.assertNotEqual(self.chat.windowTitle(), "AI Provider mode")
 
     def _join(self, thread):
         if thread is not None:

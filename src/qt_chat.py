@@ -163,7 +163,13 @@ def should_use_provider(ai_client, config_manager):
     if hasattr(ai_client, "active_provider"):
         try:
             selected = ai_client.active_provider()
-        except Exception:
+        except Exception as error:
+            from .ai_client import ProviderNotConfigured
+            if isinstance(error, ProviderNotConfigured):
+                # A refused selection (e.g. remote mode with local_llm
+                # chosen) is a refusal, not offline: raise so the caller
+                # can surface it without touching the offline assistant.
+                raise
             selected = None
         if selected is None:
             return False
@@ -470,9 +476,15 @@ class QtChatWidget(_BaseWidget):
         self.attachment_area.setVisible(False)
 
     def _update_provider_indicator(self):
-        """Show which backend is active (AI provider or offline)."""
+        """Show which backend is active (AI provider, offline or refused)."""
         from . import i18n
-        if should_use_provider(self.ai_client, self.config):
+        from .ai_client import ProviderNotConfigured
+        try:
+            use_provider = should_use_provider(self.ai_client, self.config)
+        except ProviderNotConfigured as error:
+            self.setWindowTitle(str(error))
+            return
+        if use_provider:
             self.setWindowTitle(i18n._("AI Provider mode"))
         else:
             self.setWindowTitle(i18n._("Offline mode"))
@@ -518,8 +530,17 @@ class QtChatWidget(_BaseWidget):
         # Show thinking indicator
         self._show_thinking()
 
-        # Decide: AI provider or offline
-        if should_use_provider(self.ai_client, self.config):
+        # Decide: AI provider, offline, or a refused selection. The
+        # indicator shows the same decision the request itself takes.
+        try:
+            use_provider = should_use_provider(self.ai_client, self.config)
+        except Exception as error:
+            self._hide_thinking()
+            self.append_message(i18n._("System"), str(error))
+            self._update_provider_indicator()
+            return
+        self._update_provider_indicator()
+        if use_provider:
             self._send_to_provider()
         else:
             self._send_to_offline(text)
