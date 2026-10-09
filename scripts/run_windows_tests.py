@@ -28,7 +28,7 @@ def discover_windows_suite(test_directory, loader=None):
     loader = loader or unittest.defaultTestLoader
     suite = unittest.TestSuite()
     for path in sorted(Path(test_directory).glob('test_*.py')):
-        if path.name.startswith((
+        if path.name == 'test_updater.py' or path.name.startswith((
                 'test_windows_foundation', 'test_windows_file_actions',
                 'test_windows_screenshot', 'test_windows_system_actions',
                 'test_pwsh_output', 'test_qt_', 'test_readme_')):

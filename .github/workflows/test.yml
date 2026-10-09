@@ -73,7 +73,7 @@ jobs:
       - name: Byte-compile all sources
         run: python -m compileall -q src tests plugins scripts
       - name: Test native persistence, processes, startup and Qt
-        # This runner discovers only test_windows_foundation*.py and test_qt_*.py.
+        # Selects Windows, PowerShell, Qt, README and updater tests.
         # A Windows capability skip or missing Qt import fails the job.
         run: python scripts/run_windows_tests.py
       - name: Validate installer scripts and assets
