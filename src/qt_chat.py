@@ -146,10 +146,33 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel
 def should_use_provider(ai_client, config_manager):
     """Decide whether to use the AI provider or the offline assistant.
 
-    Returns True when an AI provider is configured and ready.
+    Returns True when an AI provider is configured and ready. The active
+    provider and assistance mode are resolved by the client, the same
+    component the request itself uses: a selection change (offline or
+    local mode) must be honoured by the very next request, not just by
+    the provider indicator.
     """
     if ai_client is None:
         return False
+    # The assistance mode and the active provider are resolved by the
+    # client, the same component the request itself uses: a selection
+    # change (offline or local mode) must be honoured by the very next
+    # request, not just by the provider indicator. Offline mode disables
+    # the provider; local mode requires the local settings to name a
+    # server; otherwise the configured-key checks below decide.
+    if hasattr(ai_client, "active_provider"):
+        try:
+            selected = ai_client.active_provider()
+        except Exception:
+            selected = None
+        if selected is None:
+            return False
+        if selected == "local_llm":
+            try:
+                base_url = ai_client._local_settings()["base_url"]
+                return bool(base_url)
+            except Exception:
+                return False
     try:
         # Check if any provider has an API key configured
         for provider in ("openrouter", "google_ai_studio", "anthropic",
