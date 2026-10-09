@@ -1,29 +1,20 @@
-"""Windows auto-update support for WinLinAI.
+"""Windows update check for WinLinAI.
 
-Checks for new versions on GitHub releases and downloads updates.
+The application reports a newer GitHub release and opens that release page.
+It does not download or run an installer.
 
 Security:
-- Only downloads from the official GitHub repository
-- Verifies SHA-256 checksums before installing
-- Never runs downloaded files automatically
-- User must confirm before installing
-
-Usage:
-    from src.updater import check_for_updates, download_update
-    update = check_for_updates()
-    if update:
-        print(f"New version available: {update['version']}")
+- The release page must be HTTPS on this repository
+- A failed check is never reported as up to date
+- Nothing is installed automatically
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sys
-import tempfile
-from pathlib import Path
-from typing import Dict, Optional, Tuple
-from urllib.parse import urlparse
+from typing import Dict, Tuple
+from urllib.parse import unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +32,6 @@ ALLOWED_HOSTS = {
 
 # Update check timeout
 CHECK_TIMEOUT = 10
-DOWNLOAD_TIMEOUT = 300
-
-# Max download size (500 MB)
-MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024
 
 
 def is_windows() -> bool:
@@ -84,12 +71,36 @@ def is_newer_version(current: str, new: str) -> bool:
 
 
 def _safe_url(url: str) -> bool:
-    """Check if a URL is from an allowed host."""
+    """Check if a URL is HTTPS on an allowed host."""
     try:
         parsed = urlparse(url)
-        return parsed.hostname in ALLOWED_HOSTS if parsed.hostname else False
+        host = (parsed.hostname or "").lower()
+        return parsed.scheme == "https" and host in ALLOWED_HOSTS
     except Exception:
         return False
+
+
+def official_release_url(url: str) -> str:
+    """Keep an HTTPS page of this repository. Anything else uses the releases page."""
+    try:
+        parsed = urlparse(url or "")
+        path = unquote(parsed.path or "").replace("\\", "/")
+        prefix = "/" + GITHUB_REPO
+        host = (parsed.hostname or "").lower()
+        segments = path.split("/")
+        on_repo = path == prefix or path.startswith(prefix + "/")
+        if (parsed.scheme == "https"
+                and host == "github.com"
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.port in (None, 443)
+                and on_repo
+                and "." not in segments
+                and ".." not in segments):
+            return url
+    except Exception:
+        pass
+    return GITHUB_RELEASES_URL
 
 
 def _is_windows_installer_asset(name: str) -> bool:
@@ -169,7 +180,7 @@ def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Dict:
             "version": latest_version,
             "name": data.get("name", f"v{latest_version}"),
             "body": data.get("body", ""),
-            "url": data.get("html_url", GITHUB_RELEASES_URL),
+            "url": official_release_url(data.get("html_url") or ""),
             "published_at": data.get("published_at", ""),
             "assets": assets,
         }
@@ -179,107 +190,27 @@ def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Dict:
         return {"status": "failed"}
 
 
-def download_update(asset: Dict, dest_dir: Optional[str] = None,
-                    progress_callback=None) -> Optional[str]:
-    """Download an update asset.
+def check_and_notify(config_manager=None) -> Dict:
+    """Record a completed update check. Nothing is downloaded.
 
-    Args:
-        asset: Asset dict from check_for_updates()
-        dest_dir: Destination directory (default: temp)
-        progress_callback: Optional callback(downloaded_bytes, total_bytes)
-
-    Returns:
-        Path to downloaded file, or None on failure
-    """
-    if not is_windows():
-        return None
-
-    url = asset.get("url", "")
-    name = asset.get("name", "update.exe")
-    expected_size = asset.get("size", 0)
-
-    if not _safe_url(url):
-        logger.error(f"Unsafe download URL: {url}")
-        return None
-
-    try:
-        import urllib.request
-        import ssl
-
-        # Prepare destination
-        if dest_dir is None:
-            dest_dir = tempfile.mkdtemp(prefix="winlinai_update_")
-        dest_path = Path(dest_dir) / name
-
-        # Download
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": f"WinLinAI/{get_current_version()}"},
-        )
-        context = ssl.create_default_context()
-
-        downloaded = 0
-        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT, context=context) as response:
-            with open(dest_path, "wb") as f:
-                while True:
-                    chunk = response.read(65536)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback:
-                        progress_callback(downloaded, expected_size)
-                    if downloaded > MAX_DOWNLOAD_BYTES:
-                        raise ValueError("Download exceeds maximum size")
-
-        # Verify size if known
-        actual_size = dest_path.stat().st_size
-        if expected_size and actual_size != expected_size:
-            logger.warning(f"Size mismatch: expected {expected_size}, got {actual_size}")
-
-        logger.info(f"Downloaded update: {dest_path} ({actual_size} bytes)")
-        return str(dest_path)
-
-    except Exception as error:
-        logger.error(f"Download failed: {type(error).__name__}: {error}")
-        return None
-
-
-def verify_checksum(filepath: str, expected_sha256: str) -> bool:
-    """Verify a file's SHA-256 checksum."""
-    try:
-        h = hashlib.sha256()
-        with open(filepath, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
-        actual = h.hexdigest()
-        return actual.lower() == expected_sha256.lower()
-    except Exception:
-        return False
-
-
-def get_update_downloads_dir() -> Path:
-    """Get the directory for downloaded updates."""
-    path = Path.home() / "AppData" / "Local" / "WinLinAI" / "Updates"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def check_and_notify(config_manager=None) -> Optional[Dict]:
-    """Check for updates and return info if available.
-
-    This is the main entry point for the UI to check for updates.
-    Does not download automatically - user must confirm.
+    ``available`` stores the new version and announces it. ``current`` clears
+    a stale available flag. ``failed`` and ``unsupported`` leave a previously
+    stored update untouched and do not announce an update.
     """
     update = check_for_updates()
-    if update:
-        logger.info(f"Update available: {update['version']}")
-        # Could store in config for UI to display
+    status = update.get("status") if isinstance(update, dict) else None
+    if status == "available":
+        logger.info("Update available: %s", update.get("version"))
         if config_manager is not None:
             try:
                 config_manager.set("update.available", True)
-                config_manager.set("update.version", update["version"])
-                config_manager.set("update.url", update["url"])
+                config_manager.set("update.version", update.get("version"))
+                config_manager.set("update.url", update.get("url"))
             except Exception:
                 pass
-    return update
+    elif status == "current" and config_manager is not None:
+        try:
+            config_manager.set("update.available", False)
+        except Exception:
+            pass
+    return update if isinstance(update, dict) else {"status": "failed"}

@@ -8,11 +8,12 @@ from src.updater import (
     parse_version,
     is_newer_version,
     _safe_url,
+    official_release_url,
     _is_windows_installer_asset,
     check_for_updates,
-    verify_checksum,
-    get_update_downloads_dir,
+    check_and_notify,
     GITHUB_REPO,
+    GITHUB_RELEASES_URL,
     ALLOWED_HOSTS,
 )
 
@@ -78,6 +79,7 @@ class TestSafeUrl(unittest.TestCase):
     def test_other_hosts_blocked(self):
         self.assertFalse(_safe_url("https://evil.com/malware.exe"))
         self.assertFalse(_safe_url("http://github.com.evil.com/"))
+        self.assertFalse(_safe_url("http://github.com/1400015/winlinai"))
         self.assertFalse(_safe_url("file:///C:/Windows/System32/calc.exe"))
 
     def test_invalid_url(self):
@@ -146,7 +148,8 @@ class TestCheckForUpdates(unittest.TestCase):
             with patch('src.updater.get_current_version', return_value="1.4.2"):
                 mock_response = Mock()
                 mock_response.read.return_value = (
-                    b'{"tag_name": "v1.5.0", "html_url": "https://example.com/r",'
+                    b'{"tag_name": "v1.5.0",'
+                    b' "html_url": "https://github.com/1400015/winlinai/releases/tag/v1.5.0",'
                     b' "assets": []}')
                 mock_response.__enter__ = Mock(return_value=mock_response)
                 mock_response.__exit__ = Mock(return_value=False)
@@ -154,7 +157,22 @@ class TestCheckForUpdates(unittest.TestCase):
                     result = check_for_updates()
         self.assertEqual(result["status"], "available")
         self.assertEqual(result["version"], "1.5.0")
-        self.assertEqual(result["url"], "https://example.com/r")
+        self.assertEqual(
+            result["url"],
+            "https://github.com/1400015/winlinai/releases/tag/v1.5.0")
+
+    def test_foreign_release_page_uses_the_official_url(self):
+        with patch('src.updater.is_windows', return_value=True):
+            with patch('src.updater.get_current_version', return_value="1.4.2"):
+                mock_response = Mock()
+                mock_response.read.return_value = (
+                    b'{"tag_name": "v1.5.0", "html_url": "https://example.com/r",'
+                    b' "assets": []}')
+                mock_response.__enter__ = Mock(return_value=mock_response)
+                mock_response.__exit__ = Mock(return_value=False)
+                with patch('urllib.request.urlopen', return_value=mock_response):
+                    result = check_for_updates()
+        self.assertEqual(result["url"], GITHUB_RELEASES_URL)
 
     def test_empty_tag_returns_failed(self):
         with patch('src.updater.is_windows', return_value=True):
@@ -179,49 +197,64 @@ class TestCheckForUpdates(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
 
 
-class TestVerifyChecksum(unittest.TestCase):
-    def test_valid_checksum(self):
-        import tempfile
-        import os
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as f:
-            f.write(b"test content")
-            path = f.name
-        try:
-            import hashlib
-            expected = hashlib.sha256(b"test content").hexdigest()
-            self.assertTrue(verify_checksum(path, expected))
-        finally:
-            os.unlink(path)
+class TestOfficialReleaseUrl(unittest.TestCase):
+    def test_keeps_this_repository(self):
+        url = "https://github.com/1400015/winlinai/releases/tag/v1.5.0"
+        self.assertEqual(official_release_url(url), url)
 
-    def test_invalid_checksum(self):
-        import tempfile
-        import os
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as f:
-            f.write(b"test content")
-            path = f.name
-        try:
-            self.assertFalse(verify_checksum(path, "0" * 64))
-        finally:
-            os.unlink(path)
+    def test_rejects_a_lookalike_repository(self):
+        self.assertEqual(
+            official_release_url("https://github.com/1400015/winlinai-evil/releases"),
+            GITHUB_RELEASES_URL)
 
-    def test_nonexistent_file(self):
-        self.assertFalse(verify_checksum(r"C:\nonexistent.txt", "0" * 64))
+    def test_rejects_plain_http(self):
+        self.assertEqual(
+            official_release_url("http://github.com/1400015/winlinai/releases"),
+            GITHUB_RELEASES_URL)
+
+    def test_rejects_a_path_that_leaves_the_repository(self):
+        escaped = (
+            "https://github.com/1400015/winlinai/releases/tag/v1.5.0"
+            "/../../evil")
+        encoded = "https://github.com/1400015/winlinai/%2e%2e/%2e%2e/evil"
+        with_user = "https://user@github.com/1400015/winlinai/releases"
+        self.assertEqual(official_release_url(escaped), GITHUB_RELEASES_URL)
+        self.assertEqual(official_release_url(encoded), GITHUB_RELEASES_URL)
+        self.assertEqual(official_release_url(with_user), GITHUB_RELEASES_URL)
 
 
-class TestGetUpdateDownloadsDir(unittest.TestCase):
-    def test_creates_directory(self):
-        from pathlib import Path
-        import tempfile
+class TestCheckAndNotify(unittest.TestCase):
+    def test_available_is_stored_and_announced(self):
+        config = Mock()
+        update = {
+            "status": "available",
+            "version": "9.9.9",
+            "url": GITHUB_RELEASES_URL,
+        }
+        with patch("src.updater.check_for_updates", return_value=update):
+            result = check_and_notify(config)
+        self.assertEqual(result["status"], "available")
+        config.set.assert_any_call("update.available", True)
+        config.set.assert_any_call("update.version", "9.9.9")
+        config.set.assert_any_call("update.url", GITHUB_RELEASES_URL)
 
-        with tempfile.TemporaryDirectory() as directory:
-            temporary_home = Path(directory)
-            with patch('src.updater.Path.home', return_value=temporary_home):
-                path = get_update_downloads_dir()
-            self.assertTrue(path.exists())
-            self.assertTrue(path.is_dir())
-            self.assertIn(temporary_home, path.parents)
-            self.assertIn("WinLinAI", str(path))
-            self.assertIn("Updates", str(path))
+    def test_current_clears_a_stale_update(self):
+        config = Mock()
+        with patch("src.updater.check_for_updates",
+                   return_value={"status": "current", "version": "1.4.2"}):
+            result = check_and_notify(config)
+        self.assertEqual(result["status"], "current")
+        config.set.assert_called_once_with("update.available", False)
+
+    def test_failed_and_unsupported_leave_the_stored_update(self):
+        for status in ("failed", "unsupported"):
+            with self.subTest(status=status):
+                config = Mock()
+                with patch("src.updater.check_for_updates",
+                           return_value={"status": status}):
+                    result = check_and_notify(config)
+                self.assertEqual(result["status"], status)
+                config.set.assert_not_called()
 
 
 class TestConstants(unittest.TestCase):
