@@ -146,10 +146,33 @@ def provider_reply_text(ai_client, messages, lang="en", image_paths=None, cancel
 def should_use_provider(ai_client, config_manager):
     """Decide whether to use the AI provider or the offline assistant.
 
-    Returns True when an AI provider is configured and ready.
+    Returns True when an AI provider is configured and ready. The active
+    provider and assistance mode are resolved by the client, the same
+    component the request itself uses: a selection change (offline or
+    local mode) must be honoured by the very next request, not just by
+    the provider indicator.
     """
     if ai_client is None:
         return False
+    # The assistance mode and the active provider are resolved by the
+    # client, the same component the request itself uses: a selection
+    # change (offline or local mode) must be honoured by the very next
+    # request, not just by the provider indicator. Offline mode disables
+    # the provider; local mode requires the local settings to name a
+    # server; otherwise the configured-key checks below decide.
+    if hasattr(ai_client, "active_provider"):
+        # The selection is resolved by the client, the same component the
+        # request itself uses. A refused selection and any unexpected
+        # failure in that resolution both propagate: neither is offline.
+        selected = ai_client.active_provider()
+        if selected is None:
+            return False
+        if selected == "local_llm":
+            try:
+                base_url = ai_client._local_settings()["base_url"]
+                return bool(base_url)
+            except Exception:
+                return False
     try:
         # Check if any provider has an API key configured
         for provider in ("openrouter", "google_ai_studio", "anthropic",
@@ -447,9 +470,16 @@ class QtChatWidget(_BaseWidget):
         self.attachment_area.setVisible(False)
 
     def _update_provider_indicator(self):
-        """Show which backend is active (AI provider or offline)."""
+        """Show which backend is active (AI provider, offline or refused)."""
         from . import i18n
-        if should_use_provider(self.ai_client, self.config):
+        try:
+            use_provider = should_use_provider(self.ai_client, self.config)
+        except Exception as error:
+            # A refused selection or an unexpected resolution failure is
+            # neither provider nor offline: show the message itself.
+            self.setWindowTitle(str(error))
+            return
+        if use_provider:
             self.setWindowTitle(i18n._("AI Provider mode"))
         else:
             self.setWindowTitle(i18n._("Offline mode"))
@@ -495,8 +525,17 @@ class QtChatWidget(_BaseWidget):
         # Show thinking indicator
         self._show_thinking()
 
-        # Decide: AI provider or offline
-        if should_use_provider(self.ai_client, self.config):
+        # Decide: AI provider, offline, or a refused selection. The
+        # indicator shows the same decision the request itself takes.
+        try:
+            use_provider = should_use_provider(self.ai_client, self.config)
+        except Exception as error:
+            self._hide_thinking()
+            self.append_message(i18n._("System"), str(error))
+            self._update_provider_indicator()
+            return
+        self._update_provider_indicator()
+        if use_provider:
             self._send_to_provider()
         else:
             self._send_to_offline(text)
