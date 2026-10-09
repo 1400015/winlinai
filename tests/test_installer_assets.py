@@ -20,10 +20,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INSTALLER_DIR = PROJECT_ROOT / "installer"
 
 
-def _resolve_repo_path(relative: str) -> Path:
-    """Resolve an installer-relative Windows path against the repo root."""
-    parts = PureWindowsPath(relative).parts
-    return PROJECT_ROOT.joinpath(*parts)
+def _resolve_iss_path(relative: str) -> Path:
+    """Resolve a path the way ISCC does: relative to the .iss directory."""
+    return INSTALLER_DIR.joinpath(*PureWindowsPath(relative).parts)
 
 
 def requires_powershell(test):
@@ -55,25 +54,45 @@ class TestInnoSetupReferences(unittest.TestCase):
         self.assertTrue(self.iss_path.is_file())
 
     def test_setup_icon_exists(self):
-        """SetupIconFile must point to an existing file."""
+        """SetupIconFile is relative to the .iss file and must exist."""
         match = re.search(r"SetupIconFile=(\S+)", self.iss_text)
         self.assertIsNotNone(match, "SetupIconFile not found in .iss")
-        icon_path = _resolve_repo_path(match.group(1))
+        self.assertTrue(match.group(1).startswith("..\\"),
+                        "SetupIconFile must leave the installer directory")
+        icon_path = _resolve_iss_path(match.group(1))
         self.assertTrue(icon_path.is_file(),
                         f"SetupIconFile does not exist: {icon_path}")
+        expected = PROJECT_ROOT / "assets" / "io.github.linux_ai_assistant.ico"
+        self.assertEqual(icon_path.resolve(), expected.resolve())
+
+    def test_output_dir_is_beside_the_script(self):
+        """ISCC writes beside the .iss file, where the build script looks."""
+        match = re.search(r"^OutputDir=(.+)$", self.iss_text, re.MULTILINE)
+        self.assertIsNotNone(match, "OutputDir not found in .iss")
+        output = _resolve_iss_path(match.group(1).strip())
+        self.assertEqual(output, INSTALLER_DIR / "output")
+
+    def test_application_source_is_the_isolated_pyinstaller_dist(self):
+        """The packaged app is the frozen directory, not the wheel dist."""
+        sources = re.findall(r"Source:\s*\"([^\"]+)\"", self.iss_text)
+        packaged = [source for source in sources if "winlinai" in source.lower()]
+        self.assertEqual(packaged, ["pyinstaller\\dist\\winlinai\\*"])
+        self.assertEqual(
+            _resolve_iss_path(packaged[0].replace("*", "winlinai.exe")),
+            INSTALLER_DIR / "pyinstaller" / "dist" / "winlinai" / "winlinai.exe")
 
     def test_iss_sources_are_generated_or_exist(self):
-        """Source entries in [Files] may be build artifacts (dist/) or
-        existing files. Only pre-existing files are checked here."""
-        # Find all Source: lines in [Files] section
+        """Source entries in [Files] may be build artifacts or existing files.
+        Only pre-existing files are checked here."""
         sources = re.findall(r"Source:\s*\"([^\"]+)\"", self.iss_text)
         self.assertTrue(len(sources) > 0, "No Source entries found")
         for source in sources:
-            # Build artifacts (generated during build) are allowed to be missing
-            if source.startswith("dist\\") or source.startswith("installer\\vcredist"):
+            # The frozen app and the optional redistributable are produced
+            # by the build script and are allowed to be missing here.
+            if ("pyinstaller\\dist" in source
+                    or source.startswith("installer\\vcredist")):
                 continue
-            path = _resolve_repo_path(source)
-            # May contain wildcards — check parent directory
+            path = _resolve_iss_path(source)
             if "*" in source:
                 parent = path.parent
                 self.assertTrue(parent.is_dir(),
@@ -98,13 +117,52 @@ class TestInnoSetupReferences(unittest.TestCase):
         script = (INSTALLER_DIR / "build-installer.ps1").read_text(encoding="utf-8")
         self.assertIn("_version.py", script)
         self.assertIn("/DMyAppVersion=", script)
+        # Windows PowerShell 5.1 Join-Path accepts only one child path.
+        self.assertNotIn('Join-Path $ProjectDir "src" "_version.py"', script)
+        self.assertIn('Join-Path $ProjectDir "src\\_version.py"', script)
 
     def test_build_script_cleans_only_with_clean_flag(self):
-        """dist/build survive a plain run; -SkipExe reuses them."""
+        """dist/build survive a plain run; -SkipExe reuses the frozen app."""
         script = (INSTALLER_DIR / "build-installer.ps1").read_text(encoding="utf-8")
         self.assertNotIn("if ($Clean -or (Test-Path $DistDir)", script)
         self.assertIn("if ($Clean) {", script)
         self.assertIn("-SkipExe requires", script)
+
+    def test_frozen_build_does_not_touch_the_wheel_directories(self):
+        """PyInstaller must not copy or delete the wheel dist or build."""
+        script = (INSTALLER_DIR / "build-installer.ps1").read_text(encoding="utf-8")
+        self.assertNotIn("Copy-Item", script)
+        self.assertNotIn("Remove-Item -Path $DistDir", script)
+        self.assertNotIn("Remove-Item -Path $BuildDir", script)
+        self.assertIn("--distpath", script)
+        self.assertIn("--workpath", script)
+        self.assertIn('$DistPath = Join-Path $PyInstallerRoot "dist"', script)
+        self.assertIn('$WorkPath = Join-Path $PyInstallerRoot "work"', script)
+        self.assertIn("--distpath $DistPath", script)
+        self.assertIn("--workpath $WorkPath", script)
+
+    def test_build_script_stops_before_inno_when_pyinstaller_fails(self):
+        """A failed frozen build must not continue into the installer step."""
+        script = (INSTALLER_DIR / "build-installer.ps1").read_text(encoding="utf-8")
+        failed = script.index('Stop-InstallerBuild "PyInstaller build failed"')
+        missing = script.index("PyInstaller finished without")
+        installer = script.index("Building installer with Inno Setup")
+        self.assertLess(failed, installer)
+        self.assertLess(missing, installer)
+        self.assertIn("exit 1", script)
+        self.assertIn('Stop-InstallerBuild "PyInstaller installation failed"', script)
+        self.assertIn('Stop-InstallerBuild "Inno Setup build failed"', script)
+
+    def test_prepare_release_stops_after_a_failed_test_or_installer(self):
+        """A failed test run or installer build must not continue the release."""
+        script = (INSTALLER_DIR / "prepare-release.ps1").read_text(encoding="utf-8")
+        self.assertNotIn("continuing with release preparation", script)
+        self.assertNotIn("continuing without it", script)
+        tests_failed = script.index('Write-Error "Tests failed"')
+        installer_failed = script.index('Write-Error "Installer build failed"')
+        self.assertLess(tests_failed, installer_failed)
+        self.assertIn("exit 1", script[tests_failed:installer_failed])
+        self.assertIn("exit 1", script[installer_failed:])
 
 
 class TestPyInstallerSpec(unittest.TestCase):
@@ -136,6 +194,10 @@ class TestPyInstallerSpec(unittest.TestCase):
         self.assertIn("from src.qt_app import run", entry_text)
         # pathex keeps the project root so `import src` works when frozen.
         self.assertIn("pathex=[str(project_root)]", self.spec_text)
+
+    def test_spec_bundles_lazy_pywin32_timezone(self):
+        """win32timezone is imported by the pywin32 extension, not by our code."""
+        self.assertIn("'win32timezone'", self.spec_text)
 
     def test_spec_has_no_removed_pyinstaller6_options(self):
         """Options removed in PyInstaller 6 must not be present."""

@@ -18,70 +18,73 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Paths
+function Stop-InstallerBuild {
+    param([Parameter(Mandatory = $true)][string]$Message)
+    Write-Host $Message -ForegroundColor Red
+    exit 1
+}
+
+# The frozen app lives under installer\pyinstaller. The wheel directory dist\
+# and the setuptools directory build\ are not copied, replaced, or deleted.
 $ProjectDir = Split-Path -Parent $PSScriptRoot
-$DistDir = Join-Path $ProjectDir "dist"
-$BuildDir = Join-Path $ProjectDir "build"
 $InstallerDir = Join-Path $ProjectDir "installer"
 $OutputDir = Join-Path $InstallerDir "output"
-$ExeDir = Join-Path $DistDir "winlinai"
+$PyInstallerRoot = Join-Path $InstallerDir "pyinstaller"
+$WorkPath = Join-Path $PyInstallerRoot "work"
+$DistPath = Join-Path $PyInstallerRoot "dist"
+$FrozenDir = Join-Path $DistPath "winlinai"
+$FrozenExe = Join-Path $FrozenDir "winlinai.exe"
 
 Write-Host "=== WinLinAI Installer Build ===" -ForegroundColor Cyan
 Write-Host "Project: $ProjectDir"
 Write-Host "Output:  $OutputDir"
 
-# Clean previous builds only when -Clean is given: a plain dist/ or
-# build/ must not be destroyed, because -SkipExe reuses dist\winlinai.
+# -Clean removes only this script's directories. A plain run leaves dist\ and
+# build\ in place, and -SkipExe reuses installer\pyinstaller\dist\winlinai.
 if ($Clean) {
-    Write-Host "`nCleaning previous builds..." -ForegroundColor Yellow
-    Remove-Item -Path $DistDir -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path $BuildDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "`nCleaning previous installer builds..." -ForegroundColor Yellow
+    Remove-Item -Path $PyInstallerRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $OutputDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Create directories
-New-Item -ItemType Directory -Path $ExeDir -Force | Out-Null
-New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-
-# Step 1: Build Python executable with PyInstaller
+# Step 1: Build the frozen executable with PyInstaller.
 if (-not $SkipExe) {
     Write-Host "`n=== Step 1: Building executable with PyInstaller ===" -ForegroundColor Cyan
 
-    # Install PyInstaller if needed
-    $pyinstaller = Get-Command pyinstaller -ErrorAction SilentlyContinue
-    if (-not $pyinstaller) {
+    & python -c "import PyInstaller"
+    if ($LASTEXITCODE -ne 0) {
         Write-Host "Installing PyInstaller..." -ForegroundColor Yellow
         & python -m pip install pyinstaller
+        if ($LASTEXITCODE -ne 0) {
+            Stop-InstallerBuild "PyInstaller installation failed"
+        }
     }
 
-    # Build spec file path
     $specFile = Join-Path $InstallerDir "winlinai.spec"
-
     Set-Location $ProjectDir
-    & pyinstaller --clean --noconfirm $specFile
+    Remove-Item -Path $WorkPath -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path $FrozenDir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $WorkPath -Force | Out-Null
+    New-Item -ItemType Directory -Path $DistPath -Force | Out-Null
 
+    & python -m PyInstaller --noconfirm --workpath $WorkPath --distpath $DistPath $specFile
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "PyInstaller build failed"
-        exit 1
+        Stop-InstallerBuild "PyInstaller build failed"
+    }
+    if (-not (Test-Path $FrozenExe)) {
+        Stop-InstallerBuild "PyInstaller finished without $FrozenExe"
     }
 
-    # Copy dist output to our structure
-    $pyinstallerDist = Join-Path $DistDir "winlinai"
-    if (Test-Path $pyinstallerDist) {
-        Copy-Item -Path "$pyinstallerDist\*" -Destination $ExeDir -Recurse -Force
-    }
-
-    Write-Host "Executable built: $ExeDir" -ForegroundColor Green
+    Write-Host "Executable built: $FrozenExe" -ForegroundColor Green
 } else {
     Write-Host "`n=== Skipping executable build (using existing) ===" -ForegroundColor Yellow
-    $existingExe = Join-Path $ExeDir "winlinai.exe"
-    if (-not (Test-Path $existingExe)) {
-        Write-Error "-SkipExe requires $existingExe (run without -SkipExe or with -Clean first)"
-        exit 1
+    if (-not (Test-Path $FrozenExe)) {
+        Stop-InstallerBuild "-SkipExe requires $FrozenExe (run without -SkipExe or with -Clean first)"
     }
 }
 
-# Step 2: Download Visual C++ Redistributable (optional)
+# Step 2: Download Visual C++ Redistributable (optional). A download failure
+# does not abort the build: the redistributable is not packaged by the script.
 Write-Host "`n=== Step 2: Preparing dependencies ===" -ForegroundColor Cyan
 $vcredistUrl = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 $vcredistPath = Join-Path $InstallerDir "vcredist_x64.exe"
@@ -97,50 +100,55 @@ if (-not (Test-Path $vcredistPath)) {
     }
 }
 
-# Step 3: Build installer with Inno Setup
+# Step 3: Build installer with Inno Setup. Reached only when the frozen
+# executable from step 1 is present.
 Write-Host "`n=== Step 3: Building installer with Inno Setup ===" -ForegroundColor Cyan
 
-$iscc = Get-Command iscc -ErrorAction SilentlyContinue
-if (-not $iscc) {
-    # Try common Inno Setup install locations
+$isccPath = $null
+$isccCommand = Get-Command iscc -ErrorAction SilentlyContinue
+if ($isccCommand) {
+    $isccPath = $isccCommand.Source
+}
+if (-not $isccPath) {
     $innoPaths = @(
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-        "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+        "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
     )
     foreach ($path in $innoPaths) {
-        if (Test-Path $path) {
-            $iscc = $path
+        if ($path -and (Test-Path $path)) {
+            $isccPath = $path
             break
         }
     }
 }
 
-if (-not $iscc) {
-    Write-Error "Inno Setup not found. Please install Inno Setup 6 from https://jrsoftware.org/isinfo.php"
-    exit 1
+if (-not $isccPath) {
+    Stop-InstallerBuild "Inno Setup not found. Please install Inno Setup 6 from https://jrsoftware.org/isinfo.php"
 }
 
 # Single source of truth: read __version__ from src/_version.py.
-$versionFile = Join-Path $ProjectDir "src" "_version.py"
+$versionFile = Join-Path $ProjectDir "src\_version.py"
 $versionContent = Get-Content $versionFile -Raw
 if ($versionContent -notmatch ('__version__' + [char]92 + 's*=' + [char]92 + 's*.([0-9][0-9A-Za-z.+-]*).*')) {
-    Write-Error "Could not read __version__ from $versionFile"
-    exit 1
+    Stop-InstallerBuild "Could not read __version__ from $versionFile"
 }
 $AppVersion = $Matches[1]
 Write-Host "Building installer for version: $AppVersion"
 
+New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 $issFile = Join-Path $InstallerDir "winlinai.iss"
-& $iscc "/DMyAppVersion=$AppVersion" $issFile
-
+& $isccPath "/DMyAppVersion=$AppVersion" $issFile
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Inno Setup build failed"
-    exit 1
+    Stop-InstallerBuild "Inno Setup build failed"
 }
 
-# Step 4: Summary
+$installerFiles = @(Get-ChildItem -Path $OutputDir -Filter "*.exe" -ErrorAction SilentlyContinue)
+if ($installerFiles.Count -eq 0) {
+    Stop-InstallerBuild "Inno Setup finished without an installer in $OutputDir"
+}
+
 Write-Host "`n=== Build Complete ===" -ForegroundColor Green
-$installerFiles = Get-ChildItem -Path $OutputDir -Filter "*.exe"
 foreach ($file in $installerFiles) {
     $sizeMB = [math]::Round($file.Length / 1MB, 2)
     Write-Host "Installer: $($file.FullName) ($sizeMB MB)" -ForegroundColor Green

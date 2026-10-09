@@ -46,6 +46,9 @@ hiddenimports = [
     'src.windows_file_actions',
     'src.qt_file_dialogs',
     'src.platform.pwsh_output',
+    # pywin32 loads this from the extension after the ImportError guard,
+    # so a frozen start fails while creating the private config directory.
+    'win32timezone',
 ]
 
 a = Analysis(

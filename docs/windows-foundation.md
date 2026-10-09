@@ -36,7 +36,7 @@ arrancar a interface Qt.
 
 ## Âmbito da etapa
 
-Estado: **I** = implementado, **INT** = integrado num caller real, **CI** = testado em CI Windows, **AR** = aceite em máquina real (pendente).
+Estado: **I** = implementado, **INT** = integrado num caller real, **CI** = testado em CI Windows, **AR** = aceite em máquina real.
 
 | Capacidade | Estado | Notas |
 | --- | --- | --- |
@@ -49,7 +49,7 @@ Estado: **I** = implementado, **INT** = integrado num caller real, **CI** = test
 | Tray e autostart | I/INT/CI | Expert Mode, Statistics, ícone SVG, tooltip com plataforma, checkbox de autostart em Settings |
 | Updater | I/INT/CI | Verificação de updates em Settings e arranque; sem auto-download |
 | Escrita de ficheiros (file blocks) | I/INT/CI | Fluxo expert-mode: parse, preview, confirmação, escrita atómica com backup |
-| Instalador Windows | I/CI | Scripts PowerShell corrigidos e validados (`tests/test_installer_assets.py`); `.ico` gerado; empacotamento .msi/.exe pendente |
+| Instalador Windows | I/CI/AR | Scripts validados por `tests/test_installer_assets.py`. O instalador Inno Setup `WinLinAI-1.4.2-Setup.exe` (1.4.2) foi compilado, instalado e arrancado nesta máquina: a janela abriu e o processo foi fechado. Não foi produzido um .msi. |
 
 Os comandos continuam sujeitos à política local. O texto de um modelo ou de
 uma documentação não autoriza execução. As operações Linux com privilégios,
@@ -186,7 +186,7 @@ Após uma autoavaliação honesta do código, foram executadas quatro fases de m
 ## Ainda falta
 
 - **Aceitação em máquina Windows real**: validar tray, autostart, ícones e updater com sessão gráfica (CI cobre construção e comportamento de widgets, não interação desktop)
-- **Empacotamento .msi/.exe**: Inno Setup/NSIS (scripts e assets já validados por testes)
+- **Empacotamento .msi**: não foi produzido. O instalador Inno Setup `WinLinAI-1.4.2-Setup.exe` (1.4.2) foi compilado, instalado e arrancado nesta máquina: a janela abriu e o processo foi fechado.
 - **Consolidação da gestão de conversas Qt**: paridade completa com GTK (sessões, export, procura)
 - **Paridade com ações GTK**: `conversation_actions` e `service_actions` (file blocks já integrados; winget via `windows_system_actions`)
 - **Captura de ecrã**: equivalente Windows ao portal Wayland está implementado (`src/windows_screenshot.py`); falta ensaio em máquina real
