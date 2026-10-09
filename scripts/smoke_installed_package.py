@@ -46,6 +46,9 @@ def main():
         try:
             if shell.chat is None or shell.chat.offline is None or shell.history_store is None:
                 raise RuntimeError('The installed Qt shell did not initialize its offline and history backends')
+            from PySide6 import QtCore
+            if shell.windowIcon().pixmap(QtCore.QSize(32, 32)).isNull():
+                raise RuntimeError('The installed Qt shell has no window icon')
             shell.show()
             application.processEvents()
             if not shell.isVisible():

@@ -1,16 +1,19 @@
 """Phase 4c: Qt tray drawer toggle, autostart and Windows scripts."""
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from src.qt_tray import (
     normalize_reason, tray_click_toggles, expert_mode_enabled,
-    _platform_label, _bundled_icon_path,
+    _platform_label, _bundled_icon_path, qt_icon_candidates,
 )
 from src.qt_dialogs import autostart_status_label, statistics_rows
 from src.windows_autostart import (
     AUTOSTART_VALUE_NAME, RUN_KEY, apply_autostart, autostart_command,
-    is_autostart_enabled, set_autostart, is_windows,
+    is_autostart_enabled, resolve_autostart_command, set_autostart, is_windows,
 )
 
 
@@ -89,11 +92,52 @@ class TestPlatformLabel(unittest.TestCase):
 
 
 class TestBundledIconPath(unittest.TestCase):
-    def test_finds_svg_in_checkout(self):
+    def test_finds_checkout_icon(self):
         path = _bundled_icon_path()
-        if path is not None:
-            self.assertTrue(path.is_file())
-            self.assertTrue(path.name.endswith(".svg"))
+        self.assertIsNotNone(path)
+        self.assertTrue(path.is_file())
+        self.assertEqual(path.stem, "io.github.linux_ai_assistant")
+        if sys.platform == "win32":
+            self.assertEqual(path.suffix.lower(), ".ico")
+        else:
+            self.assertEqual(path.suffix.lower(), ".svg")
+
+    def test_linux_candidates_are_the_resolved_svg_only(self):
+        svg = Path("share") / "icon.svg"
+        self.assertEqual(
+            qt_icon_candidates("linux", Path("checkout"), Path("prefix"), svg),
+            [svg])
+
+    def test_windows_prefix_ico_wins_over_the_installed_svg(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            checkout = root / "checkout"
+            prefix = root / "prefix"
+            ico = prefix / "share" / "linux-ai-assistant" / "io.github.linux_ai_assistant.ico"
+            svg = prefix / "share" / "icons" / "hicolor" / "scalable" / "apps" / "io.github.linux_ai_assistant.svg"
+            ico.parent.mkdir(parents=True)
+            svg.parent.mkdir(parents=True)
+            ico.write_bytes(b"ico")
+            svg.write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+            chosen = next(
+                (path for path in qt_icon_candidates("win32", checkout, prefix, svg)
+                 if path.is_file()),
+                None)
+            self.assertEqual(chosen, ico)
+
+    def test_installed_svg_is_used_when_no_ico_exists(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            checkout = root / "checkout"
+            prefix = root / "prefix"
+            svg = prefix / "share" / "icons" / "hicolor" / "scalable" / "apps" / "io.github.linux_ai_assistant.svg"
+            svg.parent.mkdir(parents=True)
+            svg.write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+            chosen = next(
+                (path for path in qt_icon_candidates("win32", checkout, prefix, svg)
+                 if path.is_file()),
+                None)
+            self.assertEqual(chosen, svg)
 
 
 class TestAutostartCommand(unittest.TestCase):
@@ -109,6 +153,34 @@ class TestAutostartCommand(unittest.TestCase):
     def test_invalid_ui_falls_back_to_qt(self):
         command = autostart_command("powershell.exe", "run.ps1", ui="web")
         self.assertIn("-Ui qt", command)
+
+    def test_checkout_keeps_the_run_ps1_launcher(self):
+        command = resolve_autostart_command(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\Projects\linux_ai\run.ps1",
+            r"C:\Program Files\Python\python.exe")
+        self.assertIn('-File "C:\\Projects\\linux_ai\\run.ps1"', command)
+        self.assertNotIn("-m src.app", command)
+
+    def test_installed_copy_uses_the_running_interpreter(self):
+        command = resolve_autostart_command(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            None,
+            r"C:\Program Files\Python\python.exe")
+        self.assertEqual(
+            command,
+            r'"C:\Program Files\Python\python.exe" -m src.app --ui qt')
+        self.assertNotIn("run.ps1", command)
+        self.assertNotIn("ExecutionPolicy", command)
+
+    def test_installed_invalid_ui_falls_back_to_qt(self):
+        command = resolve_autostart_command(
+            "powershell.exe", None, "python.exe", ui="web")
+        self.assertEqual(command, '"python.exe" -m src.app --ui qt')
+
+    def test_missing_launcher_and_interpreter_is_unconfigured(self):
+        self.assertIsNone(resolve_autostart_command("powershell.exe", None, None))
+        self.assertIsNone(resolve_autostart_command("powershell.exe", "", ""))
 
 
 class TestAutostartApply(unittest.TestCase):
@@ -173,6 +245,46 @@ class TestAutostartHighLevel(unittest.TestCase):
         if is_windows():
             self.assertIsNone(is_autostart_enabled(read_value=read))
 
+    def _injected_registry(self):
+        state = {"value": None}
+
+        def read(key, name):
+            return state["value"]
+
+        def write(key, name, value):
+            state["value"] = value
+
+        def delete(key, name):
+            state["value"] = None
+
+        return state, read, write, delete
+
+    def test_set_autostart_uses_the_interpreter_when_run_ps1_is_absent(self):
+        state, read, write, delete = self._injected_registry()
+        with patch("src.windows_autostart.is_windows", return_value=True), \
+                patch("src.windows_autostart.windows_backends",
+                      return_value=(read, write, delete)), \
+                patch("src.windows_autostart.default_script_path", return_value=None), \
+                patch("src.windows_autostart.sys.executable", r"C:\App\python.exe"):
+            result = set_autostart(True)
+        self.assertEqual(result, "enabled")
+        self.assertEqual(state["value"], r'"C:\App\python.exe" -m src.app --ui qt')
+
+    def test_set_autostart_keeps_run_ps1_for_a_checkout(self):
+        state, read, write, delete = self._injected_registry()
+        with patch("src.windows_autostart.is_windows", return_value=True), \
+                patch("src.windows_autostart.windows_backends",
+                      return_value=(read, write, delete)), \
+                patch("src.windows_autostart.default_script_path",
+                      return_value=r"C:\proj\run.ps1"), \
+                patch("src.windows_autostart.default_powershell_exe",
+                      return_value=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"), \
+                patch("src.windows_autostart.sys.executable", r"C:\App\python.exe"):
+            result = set_autostart(True)
+        self.assertEqual(result, "enabled")
+        self.assertIn('-File "C:\\proj\\run.ps1"', state["value"])
+        self.assertNotIn("-m src.app", state["value"])
+
 
 class TestAutostartStatusLabel(unittest.TestCase):
     def test_enabled(self):
@@ -215,9 +327,52 @@ class TestScriptsPresent(unittest.TestCase):
         install = (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
         self.assertIn("CurrentVersion\\Run", install)
         self.assertIn("LinuxAIAssistant", install)
+        self.assertIn("set_autostart(True)", install)
+        self.assertNotIn("autostart_command(", install)
 
 
 class TestQtTrayConstruction(unittest.TestCase):
+    def test_svg_icon_paints_after_application_startup(self):
+        import src.qt_tray as qt_tray
+        if not qt_tray.QT_AVAILABLE:
+            self.skipTest("PySide6 unavailable in this environment")
+        from PySide6 import QtCore, QtWidgets
+        from src.desktop_icons import icon_path
+        _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        path = icon_path()
+        self.assertIsNotNone(path)
+        icon = qt_tray._icon_from_svg(path)
+        self.assertIsNotNone(icon)
+        self.assertFalse(icon.pixmap(QtCore.QSize(32, 32)).isNull())
+
+    def test_bundled_icon_paints(self):
+        import src.qt_tray as qt_tray
+        if not qt_tray.QT_AVAILABLE:
+            self.skipTest("PySide6 unavailable in this environment")
+        from PySide6 import QtCore, QtWidgets
+        _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        icon = qt_tray.load_window_icon()
+        self.assertIsNotNone(icon)
+        pixmap = icon.pixmap(QtCore.QSize(32, 32))
+        self.assertFalse(pixmap.isNull())
+
+    def test_shell_window_icon_paints(self):
+        import src.qt_tray as qt_tray
+        if not qt_tray.QT_AVAILABLE:
+            self.skipTest("PySide6 unavailable in this environment")
+        from PySide6 import QtCore, QtWidgets
+        _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        import src.qt_app as qt_app
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        shell = qt_app.QtShell(
+            SimpleNamespace(get=Mock(return_value="")),
+            "windows",
+            history_path=Path(directory.name) / "history.json")
+        self.addCleanup(shell.close)
+        pixmap = shell.windowIcon().pixmap(QtCore.QSize(32, 32))
+        self.assertFalse(pixmap.isNull())
+
     def test_tray_builds_with_shell(self):
         import src.qt_tray as qt_tray
         if not qt_tray.QT_AVAILABLE:

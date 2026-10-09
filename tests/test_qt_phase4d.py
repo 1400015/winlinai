@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from src.qt_dialogs import history_rows, provider_rows, save_api_key
 
@@ -130,6 +130,22 @@ class TestDialogsWhenQtAvailable(unittest.TestCase):
         dialog = self.qt_dialogs.QtSettingsDialog(self.config)
         self.assertEqual(dialog.provider_combo.count(), 2)
         self.assertEqual(dialog.selected_provider(), "openrouter")
+
+    def test_failed_autostart_change_restores_the_checkbox(self):
+        import src.windows_autostart as windows_autostart
+        if not windows_autostart.is_windows():
+            return
+        with patch("src.windows_autostart.is_autostart_enabled", return_value=False):
+            dialog = self.qt_dialogs.QtSettingsDialog(self.config)
+        dialog.autostart_check.blockSignals(True)
+        dialog.autostart_check.setChecked(False)
+        dialog.autostart_check.blockSignals(False)
+        with patch("src.windows_autostart.set_autostart", return_value=None), \
+                patch("src.windows_autostart.is_autostart_enabled", return_value=False):
+            dialog.autostart_check.setChecked(True)
+        self.assertFalse(dialog.autostart_check.isChecked())
+        self.assertIn("disabled", dialog.autostart_status.text())
+        dialog.close()
 
     def test_settings_save_persists_through_contract(self):
         self.config.set_api_key = Mock(return_value=None)

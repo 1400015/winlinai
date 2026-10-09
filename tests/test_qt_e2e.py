@@ -452,10 +452,23 @@ class TestQtFileDialogButtons(TestQtE2EBase):
         confirm = self._make_dialog()
 
         def newest_confirmation_dialog():
-            dialogs = [widget for widget in QtWidgets.QApplication.topLevelWidgets()
-                       if isinstance(widget, QtWidgets.QDialog)]
-            self.assertTrue(dialogs)
-            return dialogs[-1]
+            # Earlier tests leave closed history dialogs alive. Their button
+            # box is only Close, and topLevelWidgets() does not keep the
+            # newest dialog last. The write dialog is the one with both roles.
+            accept = QtWidgets.QDialogButtonBox.AcceptRole
+            reject = QtWidgets.QDialogButtonBox.RejectRole
+            matches = []
+            for widget in QtWidgets.QApplication.topLevelWidgets():
+                if not isinstance(widget, QtWidgets.QDialog):
+                    continue
+                box = widget.findChild(QtWidgets.QDialogButtonBox)
+                if box is None:
+                    continue
+                roles = {box.buttonRole(button) for button in box.buttons()}
+                if accept in roles and reject in roles:
+                    matches.append(widget)
+            self.assertEqual(len(matches), 1)
+            return matches[0]
 
         def fake_exec():
             # exec() is mocked so the modal loop does not block the test;
