@@ -16,6 +16,8 @@ class TestWindowsCi(unittest.TestCase):
     def test_native_platform_and_dependency_skips_are_rejected(self):
         for identifier, reason in (
             ('test_windows_foundation_storage.TestNativeStorage', 'Windows only'),
+            ('test_windows_foundation_service_probe.TestNativeServiceProbe',
+             'Requires native Windows PowerShell 5.1'),
             ('test_qt_phase4b.TestQtChatBehaviour', 'PySide6 unavailable in this environment'),
         ):
             self.assertEqual(unexpected_skips(self.result(identifier, reason)), [(identifier, reason)])
@@ -30,6 +32,7 @@ class TestWindowsCi(unittest.TestCase):
         loader = SimpleNamespace(discover=lambda directory, pattern: loaded.append(pattern) or [])
         with tempfile.TemporaryDirectory() as directory:
             for name in ('test_windows_foundation_storage.py', 'test_windows_foundation_bootstrap.py',
+                         'test_windows_foundation_service_probe.py',
                          'test_windows_file_actions.py', 'test_windows_screenshot.py',
                          'test_windows_system_actions.py', 'test_windows_phase1.py',
                          'test_pwsh_output.py', 'test_qt_phase4a.py',
@@ -41,6 +44,7 @@ class TestWindowsCi(unittest.TestCase):
                                   'test_readme_clone_urls.py',
                                   'test_windows_file_actions.py',
                                   'test_windows_foundation_bootstrap.py',
+                                  'test_windows_foundation_service_probe.py',
                                   'test_windows_foundation_storage.py',
                                   'test_windows_screenshot.py',
                                   'test_windows_system_actions.py'])
