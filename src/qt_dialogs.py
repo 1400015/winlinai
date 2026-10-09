@@ -477,7 +477,7 @@ class QtHistoryDialog(_BaseDialog):
 
         # Button row 2: Archive, Delete, Export
         row2 = QtWidgets.QHBoxLayout()
-        self.archive_button = QtWidgets.QPushButton(i18n._("Archive"), self)
+        self.archive_button = QtWidgets.QPushButton(i18n._("Archive / restore"), self)
         self.archive_button.clicked.connect(self._archive)
         self.delete_button = QtWidgets.QPushButton(i18n._("Delete"), self)
         self.delete_button.clicked.connect(self._delete)
@@ -498,7 +498,7 @@ class QtHistoryDialog(_BaseDialog):
     def reload(self):
         self.list_widget.clear()
         from . import i18n
-        for entry in history_rows(self.store):
+        for entry in history_rows(self.store, include_archived=True):
             label = entry["title"]
             if entry["active"]:
                 label = "• " + label
@@ -576,7 +576,13 @@ class QtHistoryDialog(_BaseDialog):
             return
         if self._session_change_refused():
             return
-        self.store.select_session(session_id)
+        try:
+            self.store.select_session(session_id)
+        except ValueError as error:
+            from . import i18n
+            QtWidgets.QMessageBox.information(
+                self, i18n._("Conversation History"), str(error))
+            return
         if callable(self.on_open):
             self.on_open(session_id)
         self.accept()
@@ -592,13 +598,10 @@ class QtHistoryDialog(_BaseDialog):
         is_archived = bool(item.data(QtCore.Qt.ItemDataRole.UserRole + 1))
         visible = self._visible_session_id()
         try:
-            if hasattr(self.store, "set_archived"):
+            if hasattr(self.store, "archive_session"):
+                self.store.archive_session(session_id, not is_archived)
+            elif hasattr(self.store, "set_archived"):
                 self.store.set_archived(session_id, not is_archived)
-            elif hasattr(self.store, "archive_session"):
-                if is_archived:
-                    self.store.unarchive_session(session_id)
-                else:
-                    self.store.archive_session(session_id)
             else:
                 logger.warning("Archive not supported by this history store")
                 return
