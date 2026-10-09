@@ -20,7 +20,7 @@ Esta prova portátil verifica a fronteira de serialização. Não comprova tempo
 
 O utilizador comunicou uma execução do Grok em Windows PowerShell **5.1.26100.9549** sobre o patch aplicado limpo a `92b8833`. Os quatro módulos de teste totalizaram **52 testes, todos aprovados**. A consulta direta devolveu **301 serviços em 1,12 s**; a sonda JSON devolveu os mesmos **301 serviços em 1,38 s**. A consulta individual coincidiu no nome e no texto apresentado. O fixture confirmou zero leituras das dependências, incluindo Unicode.
 
-Esta execução fecha o critério de aceitação nativa da entrega, com evidência externa comunicada pelo utilizador. Não foi repetida no ambiente Linux desta sessão. O patch continua local, sem publicação no GitHub. A prova necessária para avançar no plano foi satisfeita; o instalador continua a exigir a sua própria compilação e aceitação.
+Esta execução fecha o critério de aceitação nativa da entrega, com evidência externa comunicada pelo utilizador. Não foi repetida no ambiente Linux desta sessão. A correção foi integrada na branch `fix/focused-stabilization`, juntamente com as entregas focadas descritas em [estabilizacao-focada-2026-10-09.md](estabilizacao-focada-2026-10-09.md). A prova necessária para avançar no plano foi satisfeita; o instalador continua a exigir a sua própria compilação e aceitação.
 
 ### Repetir a aceitação
 
