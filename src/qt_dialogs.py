@@ -547,6 +547,29 @@ class QtHistoryDialog(_BaseDialog):
             widget = widget.parent()
         return False
 
+    def _visible_session_id(self):
+        """Return the session the chat currently shows, if reachable."""
+        widget = self.parent()
+        while widget is not None:
+            chat = getattr(widget, "chat", None)
+            if chat is not None and getattr(chat, "history_store", None) is not None:
+                return chat.history_store.active_session_id
+            widget = widget.parent()
+        return None
+
+    def _sync_visible_session(self, visible):
+        """Reload the chat when the store's active session moved.
+
+        Archiving or deleting the visible session makes the store adopt
+        another active session; the chat must follow through the same
+        path Open uses, so the log and pending provider context match.
+        """
+        active = getattr(self.store, "active_session_id", None)
+        if visible is None or active == visible:
+            return
+        if callable(self.on_open):
+            self.on_open(active)
+
     def _open(self):
         session_id = self.selected_session_id()
         if session_id is None:
@@ -567,6 +590,7 @@ class QtHistoryDialog(_BaseDialog):
             return
         session_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
         is_archived = bool(item.data(QtCore.Qt.ItemDataRole.UserRole + 1))
+        visible = self._visible_session_id()
         try:
             if hasattr(self.store, "set_archived"):
                 self.store.set_archived(session_id, not is_archived)
@@ -581,6 +605,7 @@ class QtHistoryDialog(_BaseDialog):
         except Exception as error:
             logger.error("Archive failed: %s", type(error).__name__)
             return
+        self._sync_visible_session(visible)
         self.reload()
 
     def _delete(self):
@@ -592,6 +617,7 @@ class QtHistoryDialog(_BaseDialog):
         if self._session_change_refused():
             return
         session_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        visible = self._visible_session_id()
         reply = QtWidgets.QMessageBox.question(
             self, i18n._("Delete conversation"),
             i18n._("Delete this conversation? This cannot be undone."),
@@ -607,6 +633,7 @@ class QtHistoryDialog(_BaseDialog):
         except Exception as error:
             logger.error("Delete failed: %s", type(error).__name__)
             return
+        self._sync_visible_session(visible)
         self.reload()
 
     def _export(self):
