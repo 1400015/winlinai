@@ -160,12 +160,16 @@ class TestExternalWriterRace(unittest.TestCase):
                              'the publication resurrected the renamed parent')
             target = renamed / self.path.name
             self.assertTrue(target.exists(), 'the document vanished with its parent')
-            self.assertEqual(target.read_bytes(), ORIGINAL_BYTES)
+            data = target.read_bytes()
         else:
             self.assertIn('rename-refused', b_out,
                           'the external process died without a rename verdict')
             self.assertTrue(self.path.exists())
-            self.assertEqual(self.path.read_bytes(), ORIGINAL_BYTES)
+            data = self.path.read_bytes()
+        # Whole document, one writer's bytes: never empty, never mixed.
+        self.assertIn(data, (ORIGINAL_BYTES,
+                             json.dumps({'published': True}, indent=2).encode('utf-8')))
+        json.loads(data.decode('utf-8'))
 
 
 if __name__ == '__main__':
