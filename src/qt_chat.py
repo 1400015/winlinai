@@ -203,25 +203,25 @@ if TYPE_CHECKING or QT_AVAILABLE:
         Replaces QMetaObject.invokeMethod with string-based slot lookup:
         signals are type-safe and survive method renames.
         """
-        finished = QtCore.Signal(str)      # (text)
-        failed = QtCore.Signal(str)        # (last_user_message) -> offline fallback
-        cancelled = QtCore.Signal(str)     # (last_user_message)
-        image_failed = QtCore.Signal(str)  # (message) -> visible image refusal
+        finished = QtCore.Signal(str, object)      # (text, token)
+        failed = QtCore.Signal(str, object)        # (last_user_message, token)
+        cancelled = QtCore.Signal(str, object)     # (last_user_message, token)
+        image_failed = QtCore.Signal(str, object)  # (message, token)
 
         def run(self, ai_client, messages, lang, image_paths, cancel_event,
-                expert=False, distro=None, query="", context=None):
+                expert=False, distro=None, query="", context=None, token=None):
             text, error = provider_reply_text(
                 ai_client, messages, lang,
                 image_paths=image_paths, cancel_event=cancel_event,
                 expert=expert, distro=distro, query=query, context=context)
             if error == "cancelled":
-                self.cancelled.emit(messages[-1]["content"] if messages else "")
+                self.cancelled.emit(messages[-1]["content"] if messages else "", token)
             elif error and error.startswith("image:"):
-                self.image_failed.emit(error[len("image:"):])
+                self.image_failed.emit(error[len("image:"):], token)
             elif error:
-                self.failed.emit(messages[-1]["content"] if messages else "")
+                self.failed.emit(messages[-1]["content"] if messages else "", token)
             else:
-                self.finished.emit(text or "")
+                self.finished.emit(text or "", token)
 else:
     _BaseWidget = object
 
@@ -589,20 +589,17 @@ class QtChatWidget(_BaseWidget):
             attachments = prepared or None
 
         self._cancel_event.clear()
-        # Bind the queued signal to the request being dispatched: the slot
-        # must stay tied to this request even if the thread dies and a second
-        # send (or a session switch) rewrites the widget-level state first.
+        # Bind the queued signal to the request being dispatched: the token
+        # travels inside the signal, and the receiver is the widget itself, so
+        # the connection is queued to the GUI thread and the slot stays tied
+        # to this request even if the thread dies and a second send (or a
+        # session switch) rewrites the widget-level state first.
         token = self._request_token
-        worker = _ProviderWorker()
-        self._worker = worker
-        self._worker.finished.connect(
-            lambda text, worker_token=token: self._on_provider_response(text, worker_token))
-        self._worker.failed.connect(
-            lambda message, worker_token=token: self._on_provider_failed(message, worker_token))
-        self._worker.cancelled.connect(
-            lambda message, worker_token=token: self._on_provider_cancelled(message, worker_token))
-        self._worker.image_failed.connect(
-            lambda message, worker_token=token: self._on_provider_image_failed(message, worker_token))
+        self._worker = _ProviderWorker()
+        self._worker.finished.connect(self._on_provider_response)
+        self._worker.failed.connect(self._on_provider_failed)
+        self._worker.cancelled.connect(self._on_provider_cancelled)
+        self._worker.image_failed.connect(self._on_provider_image_failed)
         # Capture context for the system message (parity with GTK track)
         try:
             expert = bool(self.config.get("app.expert_mode", False))
@@ -621,13 +618,13 @@ class QtChatWidget(_BaseWidget):
                   attachments,
                   self._cancel_event),
             kwargs={"expert": expert, "distro": distro,
-                    "query": query, "context": context},
+                    "query": query, "context": context, "token": token},
             daemon=True,
             name="provider-request",
         )
         self._worker_thread.start()
 
-    @_Slot(str)
+    @_Slot(str, object)
     def _on_provider_response(self, text, token=None):
         """Handle provider response (delivered by the worker's finished signal).
 
@@ -650,7 +647,7 @@ class QtChatWidget(_BaseWidget):
             self._offer_file_blocks(text)
         self._finish_request(token)
 
-    @_Slot(str)
+    @_Slot(str, object)
     def _on_provider_failed(self, last_user_message, token=None):
         """Provider failed: fall back to the offline assistant (signal-based)."""
         from . import i18n
@@ -665,7 +662,7 @@ class QtChatWidget(_BaseWidget):
             self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
         self._finish_request(token)
 
-    @_Slot(str)
+    @_Slot(str, object)
     def _on_provider_image_failed(self, message, token=None):
         """The prepared image did not survive validation: refuse visibly."""
         from . import i18n
@@ -675,7 +672,7 @@ class QtChatWidget(_BaseWidget):
         self.append_message(i18n._("System"), message)
         self._finish_request(token)
 
-    @_Slot(str)
+    @_Slot(str, object)
     def _on_provider_cancelled(self, last_user_message, token=None):
         """User cancelled the in-flight provider request."""
         from . import i18n
