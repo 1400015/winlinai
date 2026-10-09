@@ -96,7 +96,10 @@ class TestQtApiCompatibility(unittest.TestCase):
                 self.assertTrue(enter.isAccepted())
                 self.application.sendEvent(chat.log.viewport(), drop)
                 self.assertTrue(drop.isAccepted())
-            self.assertEqual([item['path'] for item in chat._attachments], [image_path])
+            attached = [os.path.normcase(Path(item['path']).resolve())
+                         for item in chat._attachments]
+            self.assertEqual(attached, [os.path.normcase(Path(image_path).resolve())])
+            self.assertNotIn(os.path.normcase(Path(text_path).resolve()), attached)
             preview = chat._attachments[0]['widget']
             pixmaps = (label.pixmap() for label in preview.findChildren(QtWidgets.QLabel))
             self.assertTrue(any(pixmap is not None and not pixmap.isNull() for pixmap in pixmaps))
