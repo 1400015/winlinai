@@ -145,6 +145,7 @@ class TestDialogsWhenQtAvailable(unittest.TestCase):
             dialog.autostart_check.setChecked(True)
         self.assertFalse(dialog.autostart_check.isChecked())
         self.assertIn("disabled", dialog.autostart_status.text())
+        dialog.close()
 
     def test_settings_save_persists_through_contract(self):
         self.config.set_api_key = Mock(return_value=None)
