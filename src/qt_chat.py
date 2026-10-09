@@ -203,25 +203,25 @@ if TYPE_CHECKING or QT_AVAILABLE:
         Replaces QMetaObject.invokeMethod with string-based slot lookup:
         signals are type-safe and survive method renames.
         """
-        finished = QtCore.Signal(str)      # (text)
-        failed = QtCore.Signal(str)        # (last_user_message) -> offline fallback
-        cancelled = QtCore.Signal(str)     # (last_user_message)
-        image_failed = QtCore.Signal(str)  # (message) -> visible image refusal
+        finished = QtCore.Signal(str, object)      # (text, token)
+        failed = QtCore.Signal(str, object)        # (last_user_message, token)
+        cancelled = QtCore.Signal(str, object)     # (last_user_message, token)
+        image_failed = QtCore.Signal(str, object)  # (message, token)
 
         def run(self, ai_client, messages, lang, image_paths, cancel_event,
-                expert=False, distro=None, query="", context=None):
+                expert=False, distro=None, query="", context=None, token=None):
             text, error = provider_reply_text(
                 ai_client, messages, lang,
                 image_paths=image_paths, cancel_event=cancel_event,
                 expert=expert, distro=distro, query=query, context=context)
             if error == "cancelled":
-                self.cancelled.emit(messages[-1]["content"] if messages else "")
+                self.cancelled.emit(messages[-1]["content"] if messages else "", token)
             elif error and error.startswith("image:"):
-                self.image_failed.emit(error[len("image:"):])
+                self.image_failed.emit(error[len("image:"):], token)
             elif error:
-                self.failed.emit(messages[-1]["content"] if messages else "")
+                self.failed.emit(messages[-1]["content"] if messages else "", token)
             else:
-                self.finished.emit(text or "")
+                self.finished.emit(text or "", token)
 else:
     _BaseWidget = object
 
@@ -259,8 +259,12 @@ class QtChatWidget(_BaseWidget):
         # In-flight request isolation: the session that originated the request
         # and a request id. Responses are always stored in the originating
         # session, even if the user switches, archives or deletes meanwhile.
+        # The id travels with the worker: a queued signal that lands after the
+        # thread died (and after a new send or a session switch started) is
+        # still bound to the request that emitted it.
         self._request_session_id = None
         self._request_serial = 0
+        self._request_token = None
         self._build()
         if self.send_requested is not None:
             self.send_requested.connect(self._on_send)
@@ -471,6 +475,7 @@ class QtChatWidget(_BaseWidget):
         # Every path that stores the answer must honour this pair.
         self._request_serial += 1
         self._request_session_id = self._current_session_id()
+        self._request_token = (self._request_serial, self._request_session_id)
 
         # Show thinking indicator
         self._show_thinking()
@@ -584,6 +589,12 @@ class QtChatWidget(_BaseWidget):
             attachments = prepared or None
 
         self._cancel_event.clear()
+        # Bind the queued signal to the request being dispatched: the token
+        # travels inside the signal, and the receiver is the widget itself, so
+        # the connection is queued to the GUI thread and the slot stays tied
+        # to this request even if the thread dies and a second send (or a
+        # session switch) rewrites the widget-level state first.
+        token = self._request_token
         self._worker = _ProviderWorker()
         self._worker.finished.connect(self._on_provider_response)
         self._worker.failed.connect(self._on_provider_failed)
@@ -607,61 +618,76 @@ class QtChatWidget(_BaseWidget):
                   attachments,
                   self._cancel_event),
             kwargs={"expert": expert, "distro": distro,
-                    "query": query, "context": context},
+                    "query": query, "context": context, "token": token},
             daemon=True,
             name="provider-request",
         )
         self._worker_thread.start()
 
-    @_Slot(str)
-    def _on_provider_response(self, text):
-        """Handle provider response (delivered by the worker's finished signal)."""
+    @_Slot(str, object)
+    def _on_provider_response(self, text, token=None):
+        """Handle provider response (delivered by the worker's finished signal).
+
+        The token binds this invocation to the request that emitted the
+        signal: the answer is stored in the session captured at that send,
+        and it reaches the visible log and the provider context only if
+        that session is still the one being shown.
+        """
         from . import i18n
-        self._hide_thinking()
-        # The answer is stored in the session that originated the request;
-        # the visible log only advances when that session is still shown.
-        self._store_response(text)
-        if self._request_session_is_selected():
+        session_id = (token[1] if token is not None
+                      else self._request_session_id)
+        if self._token_matches(token):
+            self._hide_thinking()
+        self._store_response(text, session_id)
+        if self._request_session_is_selected(session_id):
             self._pending_messages.append({"role": "assistant", "content": text})
             self.append_message(i18n._("AI"), text)
             if self.response_received is not None:
                 self.response_received.emit(text)
             # Offer to write any ``` file blocks in the reply (expert mode only)
             self._offer_file_blocks(text)
-        self._finish_request()
+        self._finish_request(token)
 
-    @_Slot(str)
-    def _on_provider_failed(self, last_user_message):
+    @_Slot(str, object)
+    def _on_provider_failed(self, last_user_message, token=None):
         """Provider failed: fall back to the offline assistant (signal-based)."""
         from . import i18n
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         answer = offline_reply_text(self.offline, last_user_message, lang) or ""
-        self._hide_thinking()
-        self._store_response(answer)
-        if self._request_session_is_selected():
+        session_id = (token[1] if token is not None
+                      else self._request_session_id)
+        if self._token_matches(token):
+            self._hide_thinking()
+        self._store_response(answer, session_id)
+        if self._request_session_is_selected(session_id):
             self._pending_messages.append({"role": "assistant", "content": answer})
             self.append_message(i18n._("AI"), answer + "\n\n(Provider unavailable, answered offline)")
-        self._finish_request()
+        self._finish_request(token)
 
-    @_Slot(str)
-    def _on_provider_image_failed(self, message):
+    @_Slot(str, object)
+    def _on_provider_image_failed(self, message, token=None):
         """The prepared image did not survive validation: refuse visibly."""
         from . import i18n
+        if not self._token_matches(token):
+            return
         self._hide_thinking()
         self.append_message(i18n._("System"), message)
-        self._finish_request()
+        self._finish_request(token)
 
-    @_Slot(str)
-    def _on_provider_cancelled(self, last_user_message):
+    @_Slot(str, object)
+    def _on_provider_cancelled(self, last_user_message, token=None):
         """User cancelled the in-flight provider request."""
         from . import i18n
-        self._hide_thinking()
+        session_id = (token[1] if token is not None
+                      else self._request_session_id)
+        if self._token_matches(token):
+            self._hide_thinking()
         # A cancelled request stores no answer in any session.
-        if self._request_session_is_selected():
+        if self._request_session_is_selected(session_id):
             self.append_message(i18n._("System"), i18n._("Request cancelled."))
             self._pending_messages.append(
                 {"role": "system", "content": "Request cancelled by user."})
-        self._finish_request()
+        self._finish_request(token)
 
     def _current_session_id(self):
         """The history session that a send right now belongs to."""
@@ -673,7 +699,7 @@ class QtChatWidget(_BaseWidget):
         except Exception:
             return None
 
-    def _store_response(self, answer):
+    def _store_response(self, answer, session_id=None):
         """Store an assistant answer in the session that originated the request.
 
         The captured session id is used explicitly: even if the user switched,
@@ -681,7 +707,8 @@ class QtChatWidget(_BaseWidget):
         the conversation that asked the question, or nowhere when that
         conversation no longer exists.
         """
-        session_id = self._request_session_id
+        if session_id is None:
+            session_id = self._request_session_id
         if self.history_store is None or session_id is None:
             return
         try:
@@ -690,16 +717,14 @@ class QtChatWidget(_BaseWidget):
             logger.warning("History read failed: %s", type(error).__name__)
             return
         if not any(session["id"] == session_id for session in sessions):
-            # The originating session disappeared; drop the pending state and
-            # let the visible line below explain where the answer went.
-            self._request_session_id = None
+            # The originating session disappeared; the answer goes nowhere.
             return
         try:
             self.history_store.append("assistant", answer, session_id=session_id)
         except Exception as error:
             logger.warning("History write failed: %s", type(error).__name__)
 
-    def _request_session_is_selected(self):
+    def _request_session_is_selected(self, session_id=None):
         """True when the originating session is still the one being shown.
 
         Without a history store there is nothing to switch to: the request
@@ -707,16 +732,41 @@ class QtChatWidget(_BaseWidget):
         """
         if self.history_store is None:
             return True
-        return (self._request_session_id is not None
-                and self._request_session_id == self._current_session_id())
+        if session_id is None:
+            session_id = self._request_session_id
+        return session_id is not None and session_id == self._current_session_id()
 
-    def _finish_request(self):
-        """Clear the in-flight request state after a response settles."""
+    def _finish_request(self, token=None):
+        """Clear the in-flight request state after a response settles.
+
+        Only the request the slot belongs to can clear the pending state;
+        a late signal from an earlier request must not unset the id of a
+        request that is still running.
+        """
+        if token is not None and token != self._request_token:
+            return
         self._request_session_id = None
+        self._request_token = None
+
+    def _token_matches(self, token):
+        """True when the slot belongs to the current pending request.
+
+        A token of None is a direct (legacy) slot call: it stays bound to
+        the widget-level pending state, which tests and non-worker callers
+        still set by hand.
+        """
+        return token is None or token == self._request_token
 
     def request_in_flight(self):
-        """True while a provider request is pending (Stop button active)."""
-        return self._worker_thread is not None and self._worker_thread.is_alive()
+        """True while a provider request is pending (Stop button active).
+
+        The request stays in flight until its own slot has run: the worker
+        thread can die while its signal is still queued, so a live thread
+        alone under-reports the pending window.
+        """
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return True
+        return self._request_token is not None
 
     def _session_action_allowed(self):
         """New/Open/Archive/Delete are refused while a request is in flight.
