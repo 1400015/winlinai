@@ -603,10 +603,6 @@ class QtChatWidget(_BaseWidget):
             lambda message, worker_token=token: self._on_provider_cancelled(message, worker_token))
         self._worker.image_failed.connect(
             lambda message, worker_token=token: self._on_provider_image_failed(message, worker_token))
-        self._worker.finished.connect(self._on_provider_response)
-        self._worker.failed.connect(self._on_provider_failed)
-        self._worker.cancelled.connect(self._on_provider_cancelled)
-        self._worker.image_failed.connect(self._on_provider_image_failed)
         # Capture context for the system message (parity with GTK track)
         try:
             expert = bool(self.config.get("app.expert_mode", False))
