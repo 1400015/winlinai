@@ -69,10 +69,29 @@ class QtShell(_BaseShell):
         status = QtWidgets.QLabel(self._status_text(), central)
         status.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(status)
+        self._build_toolbar(layout)
         self._build_chat(layout)
         self.setCentralWidget(central)
         self._apply_window_icon()
         self._build_tray()
+
+    def _build_toolbar(self, layout):
+        """In-window access to the dialogs, independent of the system tray.
+
+        The tray icon is the only route to Settings when it is available,
+        and it is not always available: without it there is no way to
+        reach the API keys. The toolbar keeps the same dialog as the
+        tray menu's Settings entry.
+        """
+        from . import i18n
+        bar = QtWidgets.QWidget(self)
+        bar_layout = QtWidgets.QHBoxLayout(bar)
+        bar_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_button = QtWidgets.QPushButton(i18n._("Settings"), bar)
+        self.settings_button.clicked.connect(self.open_settings_dialog)
+        bar_layout.addWidget(self.settings_button)
+        bar_layout.addStretch(1)
+        layout.addWidget(bar)
 
     def _apply_window_icon(self):
         """Use the same bundled icon for the window, taskbar and tray."""
