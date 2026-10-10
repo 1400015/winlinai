@@ -33,8 +33,13 @@ class TestQtSettingsButton(unittest.TestCase):
         config.get_api_key = Mock(return_value=None)
         shell = QtShell(config, "windows",
                         history_path=str(Path(directory.name) / "history.json"))
-        self.addCleanup(shell.close)
+        self.addCleanup(self._destroy, shell)
         return shell
+
+    def _destroy(self, shell):
+        shell.close()
+        shell.deleteLater()
+        self.app.processEvents()
 
     def test_main_window_has_a_settings_button(self):
         shell = self._shell()
