@@ -99,18 +99,13 @@ files = [
     "src/build_info.py",
     "src/system_context.py",
     "src/credential_store.py",
-    "src/action_audit.py",
     "src/action_contract.py",
     "src/bounded_http.py",
     "src/provider_modes.py",
     "src/file_actions.py",
-    "src/remote_models.py",
     "src/history_store.py",
     "src/local_knowledge.py",
-    "src/system_utils.py",
     "src/knowledge_loader.py",
-    "src/process_output.py",
-    "src/config_manager.py",
     "src/display_actions.py",
     "src/offline_assistant.py",
     "src/trial_dialog.py",
@@ -142,6 +137,7 @@ files = [
     # Updater
     "src/updater.py",
 ]
+
 # Read the types of imported modules without gating their existing diagnostics.
 # Only the explicitly selected sources above belong to this increment.
 follow_imports = "silent"
@@ -155,6 +151,23 @@ show_error_codes = true
 [[tool.mypy.overrides]]
 module = ["winreg", "gi.*", "PIL.*", "psutil", "pytesseract", "yaml"]
 ignore_missing_imports = true
+
+# Modules that use POSIX-only APIs (os.O_NOFOLLOW, os.getuid, os.killpg,
+# signal.setitimer, the fork context). They are type checked by the Linux leg
+# of the matrix only: the Windows leg would report the missing POSIX symbols
+# instead of real defects. scripts/typecheck.py assembles the list for the
+# requested platform. The table lives outside [tool.mypy] because mypy
+# rejects unknown keys inside its own table.
+[tool.typecheck]
+posix_files = [
+    "src/action_audit.py",
+    "src/config_manager.py",
+    "src/process_output.py",
+    "src/remote_models.py",
+    "src/system_utils.py",
+]
+# Modules that only exist on native Windows. The Windows leg checks them.
+windows_files = []
 
 # Coverage measurement for the platform-independent core.
 # The Linux job measures the core and the GTK track; the Qt and native
