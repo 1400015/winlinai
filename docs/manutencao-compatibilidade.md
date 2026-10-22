@@ -19,25 +19,21 @@ Os extras opcionais são instalados conforme a funcionalidade a validar. Os test
 
 ## Análise de tipos gradual
 
-O workflow `typecheck.yml` usa Python 3.12 e `mypy==2.4.0`, fixado no extra de desenvolvimento. A configuração em `pyproject.toml` seleciona quatro módulos:
+O workflow `typecheck.yml` usa Python 3.12 e `mypy==2.4.0`, fixado no extra de desenvolvimento. A configuração em `pyproject.toml` verifica 74 módulos no alvo Linux e 61 no alvo win32. O conjunto cobre o núcleo sem GTK, o cliente de API e os módulos de providers, o trilho Qt, a fundação Windows e o núcleo do assistente (ações, documentos, armazenamento, diagnósticos e diálogos).
 
-| Módulo | Responsabilidade |
-| --- | --- |
-| `src/render_core.py` | Renderização sem GTK. |
-| `src/build_info.py` | Proveniência observada da build. |
-| `src/system_context.py` | Contexto local estruturado do sistema. |
-| `src/credential_store.py` | Contrato tipado do cofre opcional. |
+Os módulos que usam APIs exclusivas de uma plataforma são classificados em `[tool.typecheck]`: `posix_files` só é analisado no alvo Linux (`os.O_NOFOLLOW`, `os.getuid`, `fcntl`), e `windows_files` só no alvo win32 (`win32api`, `win32file`). `scripts/typecheck.py` reúne a lista comum com a lista da plataforma pedida; `pyproject.toml` mantém a lista comum em `[tool.mypy].files`.
 
-`check_untyped_defs = true` verifica também os corpos de funções sem anotações. `follow_imports = silent` permite ler tipos de módulos importados sem transformar os seus diagnósticos numa condição de aprovação desta primeira etapa. A configuração rejeita opcionais implícitos e mostra os códigos de erro.
+`check_untyped_defs = true` verifica também os corpos de funções sem anotações. `follow_imports = silent` permite ler tipos de módulos importados sem transformar os seus diagnósticos numa condição de aprovação. A configuração rejeita opcionais implícitos e mostra os códigos de erro.
 
 Para executar a mesma análise:
 
 ```bash
-python -m pip install '.[dev]'
-python -m mypy --config-file pyproject.toml
+python -m pip install '.[dev,qt]'
+python scripts/typecheck.py --platform linux
+python scripts/typecheck.py --platform win32
 ```
 
-O analisador fixado requer Python 3.10 ou superior; o CI utiliza 3.12. Esta condição aplica-se à ferramenta de desenvolvimento. O workflow não afirma que a aplicação inteira esteja sem erros de tipos, e módulos de GUI, configuração e clientes de API não pertencem a este primeiro conjunto. Alargar o conjunto exige rever os contratos e os diagnósticos de cada módulo, sem desativar erros de toda a aplicação para conseguir um resultado verde.
+O analisador fixado requer Python 3.10 ou superior; o CI utiliza 3.12. Esta condição aplica-se à ferramenta de desenvolvimento. O gate não afirma que a aplicação inteira esteja sem erros de tipos: cada módulo entra na lista depois de revisto, e os módulos POSIX/Windows são analisados apenas no alvo correspondente. Alargar o conjunto exige rever os contratos e os diagnósticos de cada módulo, sem desativar erros de toda a aplicação para conseguir um resultado verde.
 
 ## Versão mínima de Python
 
