@@ -6,6 +6,8 @@ Only ``probe_key`` identifiers can select a separately allowlisted read probe;
 commands shown in prose are examples and must never be executed from this data.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 import re
 from typing import Tuple

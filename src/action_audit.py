@@ -1,5 +1,7 @@
 """Private, bounded operation events. Outputs and human messages are not logged."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from contextvars import ContextVar
 import json
