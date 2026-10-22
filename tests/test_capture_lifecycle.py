@@ -81,8 +81,8 @@ class CaptureLifecycleTests(unittest.TestCase):
             self.threads.append(thread)
             return thread
 
-        self.idle_patch = patch('src.main_window.GLib.idle_add', side_effect=self.queue)
-        self.thread_patch = patch('src.main_window.threading.Thread', side_effect=thread_factory)
+        self.idle_patch = patch('src.main_window_capture.GLib.idle_add', side_effect=self.queue)
+        self.thread_patch = patch('src.main_window_capture.threading.Thread', side_effect=thread_factory)
         self.idle_patch.start()
         self.thread_patch.start()
 
@@ -261,7 +261,7 @@ class CaptureLifecycleTests(unittest.TestCase):
         self.window.on_capture_screen_clicked(None, for_ai=True)
         self.join_worker()
         self.window.on_cancel_streaming(None)
-        with patch('src.main_window.review_image') as review:
+        with patch('src.main_window_capture.review_image') as review:
             self.drain()
         review.assert_not_called()
         self.assertIsNone(self.window._pending_image)
@@ -273,7 +273,7 @@ class CaptureLifecycleTests(unittest.TestCase):
         self.join_worker()
         new = self.store.create_session('Other conversation', select=False)
         self.window._switch_session(new['id'])
-        with patch('src.main_window.review_image') as review:
+        with patch('src.main_window_capture.review_image') as review:
             self.drain()
         review.assert_not_called()
         self.assertIsNone(self.window._pending_image)
@@ -287,7 +287,7 @@ class CaptureLifecycleTests(unittest.TestCase):
             self.window.on_cancel_streaming(None)
             return True
 
-        with patch('src.main_window.review_image', side_effect=review):
+        with patch('src.main_window_capture.review_image', side_effect=review):
             self.drain()
         self.assertIsNone(self.window._pending_image)
         self.assertEqual(self.window.attachment_label.get_text(), '')
@@ -297,7 +297,7 @@ class CaptureLifecycleTests(unittest.TestCase):
         self.window.on_capture_screen_clicked(None, for_ai=True)
         self.join_worker()
         self.assertFalse(self.source.exists())
-        with patch('src.main_window.review_image', return_value=True) as review:
+        with patch('src.main_window_capture.review_image', return_value=True) as review:
             self.drain()
         review.assert_called_once()
         self.assertEqual(self.window._pending_image.data,
