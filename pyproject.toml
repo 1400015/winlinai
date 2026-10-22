@@ -128,6 +128,7 @@ files = [
     "src/qt_tray.py",
     # Shared assistant context (used by both GTK and Qt tracks)
     "src/assistant_context.py",
+    "src/chat_core.py",
     # Windows-specific modules
     "src/windows_screenshot.py",
     "src/windows_system_actions.py",

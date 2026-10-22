@@ -50,10 +50,7 @@ from .theme_utils import (
     safe_font_family,
     safe_number,
 )
-
-# Context budget: by default 12000 characters (~3k tokens) and 20 messages.
-MAX_CONTEXT_CHARS = 12000
-MAX_CONTEXT_MESSAGES = 20
+from .chat_core import limit_context, request_budget
 
 # Intervalo mínimo entre flushes de chunks streaming para a UI (segundos).
 # Coalesce os chunks recebidos entre flushes: sem isto, cada chunk agendava
@@ -1359,30 +1356,13 @@ class MainWindow(Gtk.Window):
                     for m in self.conversation_history
                     if m.get("role") and m.get("content")]
 
-        max_messages = safe_number(
-            self.config.get("context.max_messages"), MAX_CONTEXT_MESSAGES,
-            int, minimum=2, maximum=500,
-        )
-        max_chars = safe_number(
-            self.config.get("context.max_chars"), MAX_CONTEXT_CHARS,
-            int, minimum=1000, maximum=400000,
-        )
-
-        if len(messages) > max_messages:
+        max_messages, max_chars = request_budget(self.config)
+        bounded = limit_context(messages, max_messages, max_chars)
+        if len(bounded) != len(messages):
             logger.debug(
-                f"Context truncated from {len(messages)} to {max_messages} messages"
+                "Context truncated from %s to %s messages", len(messages), len(bounded)
             )
-            messages = messages[-max_messages:]
-
-        total = sum(len(m["content"]) for m in messages)
-        # Floor of 1 (not 2): with exactly two messages over budget the old
-        # loop never popped, so the character limit was silently ignored.
-        while len(messages) > 1 and total > max_chars:
-            removed = messages.pop(0)
-            total -= len(removed["content"])
-            logger.debug("Context truncated by character budget")
-
-        return messages
+        return bounded
 
     def _save_message_to_history(self, role: str, content: str):
         """Enfileira a mensagem no HistoryStore (writer background)."""
