@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from src._version import __version__
 from src.ai_client import AIClient, redact_url
+from src.ai_providers import anthropic, google
 from src.config_manager import ConfigManager
 from src.render_core import (
     placeholder_span,
@@ -354,7 +355,7 @@ class TestSecretRedaction(unittest.TestCase):
         self.assertNotIn("{url}", source)
 
     def test_google_provider_does_not_log_its_url(self):
-        source = inspect.getsource(AIClient._chat_google_ai_studio)
+        source = inspect.getsource(google.chat)
         for line in source.splitlines():
             if "logger." in line and "redact_url" not in line:
                 # Linhas com redact_url() são precisamente a mitigação;
@@ -554,12 +555,12 @@ class TestAnthropicMessageMapping(unittest.TestCase):
         self.assertTrue(all(m["role"] != "assistant" for m in messages))
 
     def test_version_is_a_header_not_a_body_field(self):
-        source = inspect.getsource(AIClient._chat_anthropic)
+        source = inspect.getsource(anthropic)
         self.assertIn('"anthropic-version": "2023-06-01"', source)
         self.assertNotIn('"anthropic_version"', source)
 
     def test_bearer_header_removed(self):
-        source = inspect.getsource(AIClient._chat_anthropic)
+        source = inspect.getsource(anthropic)
         self.assertNotIn("Authorization", source)
 
 

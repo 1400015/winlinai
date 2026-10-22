@@ -6,7 +6,6 @@ import time
 import atexit
 import logging
 import math
-import re
 import threading
 from contextlib import contextmanager
 from datetime import timezone
@@ -14,6 +13,15 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Callable, cast
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+from .ai_errors import (
+    AIProviderError, ProviderNotConfigured, AIRequestCancelled,
+    AIResponseLimitError, AIImageRequestError, AIUnsupportedImageProvider,
+    AIUnsupportedImageModel, redact_url, safe_provider_error as _safe_provider_error,
+)
+from .ai_providers import (
+    anthropic, cohere, google, groq, local_llm, mistral, openai_style,
+    openrouter, sse,
+)
 from .storage import JsonWriteCommittedError, update_json
 from .bounded_http import (
     close_response, bounded_request, iter_chunks,
@@ -21,7 +29,7 @@ from .bounded_http import (
 )
 from .stream_events import (
     iter_sse_json, iter_bounded_lines, StreamLimitError, StreamReadCancelled,
-    MAX_RESPONSE_CHARS, MAX_STREAM_EVENTS, MAX_STREAM_SECONDS, MAX_STREAM_BYTES,
+    MAX_RESPONSE_CHARS, MAX_STREAM_SECONDS, MAX_STREAM_BYTES,
 )
 from .provider_modes import (
     ASSISTANCE_MODES, LocalModelError, ProviderStatus, discover_local_models,
@@ -29,7 +37,6 @@ from .provider_modes import (
 )
 from requests import Response
 from requests.exceptions import RequestException, Timeout
-from .log_privacy import redact_text
 from .image_attachments import (
     ImageAttachmentError, MAX_IMAGES_PER_REQUEST, supports_image_input, validate_attachment,
 )
@@ -47,49 +54,6 @@ logger = logging.getLogger(__name__)
 # keeps the I/O out of the request path; a pending change is always flushed at
 # exit, and `reset_token_usage()` still writes immediately.
 USAGE_SAVE_DEBOUNCE_SECONDS = 5.0
-
-_SECRET_QUERY_RE = re.compile(
-    r"([?&](?:key|api_key|apikey|access_token|token|sig|signature|password|auth)=)[^&\s]+",
-    re.I,
-)
-
-
-class AIProviderError(RequestException):
-    """Falha ESTRUTURADA de provider (rede, HTTP, config) — não é conteúdo.
-
-    Contrato: erros de comunicação NUNCA viajam como chunks de texto do
-    modelo. Herda de RequestException para preservar a política de retry
-    (`_is_transient` inspeciona `.response`) e para que a UI/CLI possam
-    apanhar a falha por tipo em vez de adivinhar por prefixos de string
-    (`_is_api_failure` por startswith perdia erros a meio do stream e
-    disparava o fallback offline para respostas legítimas que começassem
-    por "Error:").
-    """
-
-
-class ProviderNotConfigured(AIProviderError):
-    """Provider sem chave/base_url configurados — permanente, sem retry."""
-
-
-class AIRequestCancelled(AIProviderError):
-    """The user cancelled this request; do not retry or fall back offline."""
-
-
-class AIResponseLimitError(AIProviderError):
-    """A provider exceeded local response limits; its response is incomplete."""
-
-
-class AIImageRequestError(AIProviderError):
-    """Image requests fail explicitly and must never fall back to text/OCR."""
-
-
-class AIUnsupportedImageProvider(AIImageRequestError):
-    """This mode or provider does not support reviewed image requests."""
-
-
-class AIUnsupportedImageModel(AIImageRequestError):
-    """The model's image-input capability has not been confirmed locally."""
-
 
 _REQUEST_CONTEXT = threading.local()
 
@@ -244,21 +208,8 @@ NETWORK_RETRY = dict(
 )
 
 
-def redact_url(url: str) -> str:
-    """Remove segredos de query strings antes de escrever no log."""
-    if not url:
-        return url
-    return _SECRET_QUERY_RE.sub(r"\1***", url)
-
-
 MAX_ERROR_BODY_BYTES = 16 * 1024
 MAX_ERROR_BODY_SECONDS = 1.0
-
-
-def _safe_provider_error(value):
-    # Redact before truncating: cutting a quoted secret or a token first can
-    # prevent recognizing it. This is shared with diagnostics/trial reports.
-    return redact_text(redact_url(str(value)))[:500]
 
 
 def _error_body_snippet(response, cancel_event=None):
@@ -928,78 +879,20 @@ class AIClient:
 
     @staticmethod
     def _iter_sse_openai_style(response, usage_events: Optional[list] = None):
-        for data in _bounded_provider_events(response):
-            if data.get("error"):
-                raise AIProviderError("Provider stream error: " + _safe_provider_error(data["error"]))
-            if usage_events is not None and isinstance(data.get("usage"), dict):
-                usage_events.append(data["usage"])
-            choices = data.get("choices") or []
-            if choices:
-                content = (choices[0].get("delta") or {}).get("content") or ""
-                if content:
-                    yield content
+        return sse.iter_openai_style(_bounded_provider_events(response), usage_events)
 
     @staticmethod
     def _iter_sse_anthropic(response, usage_events: Optional[list] = None):
-        for data in _bounded_provider_events(response):
-            if data.get("type") == "error":
-                raise AIProviderError("Anthropic stream error: " + _safe_provider_error(data.get("error")))
-            if usage_events is not None:
-                usage = (data.get("message") or {}).get("usage") if data.get("type") == "message_start" else data.get("usage")
-                if isinstance(usage, dict):
-                    usage_events.append(usage)
-            delta = data.get("delta")
-            if data.get("type") == "content_block_delta" and isinstance(delta, dict) and delta.get("text"):
-                yield delta["text"]
+        return sse.iter_anthropic(_bounded_provider_events(response), usage_events)
 
     @staticmethod
     def _iter_sse_cohere(response, usage_events: Optional[list] = None):
         """Cohere v1 is newline-delimited JSON, not the v2 SSE contract."""
-        events = 0
-        for raw in _bounded_provider_lines(response):
-            line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-            if not line:
-                continue
-            events += 1
-            if events > MAX_STREAM_EVENTS:
-                raise AIResponseLimitError("Provider stream exceeded the local event limit")
-            if line.startswith("data:"):
-                line = line[5:].lstrip(" ")
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise AIProviderError("Invalid JSON in Cohere stream") from error
-            event = data.get("event_type")
-            if event == "text-generation":
-                if data.get("text"):
-                    yield data["text"]
-            elif event == "stream-end":
-                reply = data.get("response") or {}
-                meta = reply.get("meta") or {}
-                usage = meta.get("billed_units") or meta.get("tokens")
-                if usage_events is not None and isinstance(usage, dict):
-                    usage_events.append(usage)
-                if data.get("finish_reason") in {"ERROR", "ERROR_TOXIC"}:
-                    raise AIProviderError("Cohere stream failed: " + str(data.get("finish_reason")))
-            elif event == "error" or data.get("error"):
-                raise AIProviderError("Cohere stream error: " + _safe_provider_error(data.get("error") or data.get("message")))
+        return sse.iter_cohere(_bounded_provider_lines(response), usage_events)
 
     @staticmethod
     def _iter_sse_google(response, usage_events: Optional[list] = None):
-        for data in _bounded_provider_events(response):
-            if data.get("error"):
-                raise AIProviderError("Google stream error: " + _safe_provider_error(data["error"]))
-            block = (data.get("promptFeedback") or {}).get("blockReason")
-            if block:
-                raise AIProviderError("Google blocked the prompt: " + str(block))
-            if usage_events is not None and isinstance(data.get("usageMetadata"), dict):
-                usage_events.append(data["usageMetadata"])
-            candidates = data.get("candidates") or []
-            if candidates:
-                parts = (candidates[0].get("content") or {}).get("parts") or []
-                for part in parts:
-                    if part.get("text"):
-                        yield part["text"]
+        return sse.iter_google(_bounded_provider_events(response), usage_events)
 
     def _validate_messages(self, messages: List[Dict[str, str]]) -> bool:
         """Validate message format."""
@@ -1239,6 +1132,10 @@ class AIClient:
 
         return result
 
+    def _bounded_text(self, chunks):
+        """Apply the local response limits to provider chunks."""
+        return _bounded_text(chunks)
+
     # ---- Helpers partilhados do contrato OpenAI-style ----
     # openrouter, mistral, groq e local_llm são o MESMO contrato (endpoint
     # /chat/completions, payload `messages`, resposta choices[0].message).
@@ -1251,30 +1148,7 @@ class AIClient:
         """POST + parse de um provider OpenAI-compatible. Levanta
         AIProviderError em falha; devolve "" quando o provider responde
         sem conteúdo (contrato já usado por mistral/groq)."""
-        try:
-            response = self._make_request(url, payload, headers, timeout)
-            try:
-                data = response.json()
-            finally:
-                close_response(response)
-
-            self._record_usage(provider, data)
-
-            choices = data.get("choices")
-            if not choices:
-                logger.warning(f"No choices in {provider} response")
-                return ""
-            content = (choices[0].get("message") or {}).get("content")
-            if content is None:
-                logger.warning(f"Empty content in {provider} response")
-                return ""
-            return content
-        except AIProviderError:
-            raise
-        except json.JSONDecodeError as e:
-            raise AIProviderError(f"Invalid JSON from {provider}: {redact_url(str(e))}") from e
-        except Exception as e:
-            raise AIProviderError(f"{provider} error: {redact_url(str(e))}") from e
+        return openai_style.chat(self, provider, url, payload, headers, timeout)
 
     def _stream_openai_style(self, provider: str, url: str, payload: Dict,
                              headers: Dict, timeout: int, messages: List[Dict]):
@@ -1282,34 +1156,10 @@ class AIClient:
 
         Registra usage REAL quando o provider o reporta no chunk final
         (`stream_options: include_usage`), senão estima a partir do texto
-        recebido — antes, o streaming (o caminho principal da GUI) nunca
-        era contabilizado e as estatísticas/orçamento ficavam mortas.
+        recebido.
         """
-        payload = dict(payload)
-        # Local compatibility is opt-in; remote providers support real usage.
-        include_usage = self.config.get("api.providers." + provider + ".stream_include_usage",
-                                        provider != "local_llm")
-        if include_usage:
-            payload["stream_options"] = {"include_usage": True}
-
-        usage_events: List[Dict] = []
-        received: List[str] = []
-        try:
-            response = self._make_request(url, payload, headers, timeout, stream=True)
-            try:
-                for chunk in _bounded_text(self._iter_sse_openai_style(response, usage_events)):
-                    received.append(chunk)
-                    yield chunk
-            finally:
-                close_response(response)
-                self._finish_stream_usage(provider, usage_events, messages,
-                                          "".join(received))
-        except AIProviderError:
-            raise
-        except Exception as e:
-            raise AIProviderError(
-                f"{provider} stream error: {redact_url(str(e))}"
-            ) from e
+        yield from openai_style.stream(self, provider, url, payload, headers,
+                                       timeout, messages)
 
     def _finish_stream_usage(self, provider: str, usage_events: List[Dict],
                              messages: List[Dict], full_text: str):
@@ -1336,28 +1186,8 @@ class AIClient:
     def _chat_openrouter(self, messages: List[Dict[str, str]], model: str, api_key: str,
                          base_url: str, temperature: float, max_tokens: int, timeout: int) -> Optional[str]:
         """Communicate with the OpenRouter API"""
-        url = f"{base_url}/chat/completions"
-
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/1400015/linux_ai",
-            "X-Title": "Linux AI Assistant"
-        }
-
-        try:
-            return self._chat_openai_style("openrouter", url, payload, headers, timeout)
-        except (AIRequestCancelled, AIResponseLimitError):
-            raise
-        except AIProviderError as e:
-            logger.error(f"OpenRouter error: {redact_url(str(e))}")
-            return None
+        return openrouter.chat(self, messages, model, api_key, base_url,
+                               temperature, max_tokens, timeout)
 
     def _google_safety_settings(self):
         """Google safety settings.
@@ -1366,88 +1196,17 @@ class AIClient:
         filters. `disable_safety_filters: true` in config allows disabling
         them explicitly.
         """
-        if not self.config.get("api.providers.google_ai_studio.disable_safety_filters", False):
-            return []
-        logger.warning("Google AI Studio safety filters disabled by configuration")
-        return [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        return google.safety_settings(self)
 
     def _google_payload(self, messages, temperature, max_tokens):
         """Keep system instructions separate from Gemini conversation turns."""
-        contents = []
-        instructions = []
-        for message in messages:
-            part = {"text": message["content"]}
-            if message["role"] == "system":
-                instructions.append(part)
-            else:
-                contents.append({
-                    "role": "user" if message["role"] == "user" else "model",
-                    "parts": [part],
-                })
-        payload = {
-            "contents": contents,
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            },
-            "safetySettings": self._google_safety_settings(),
-        }
-        if instructions:
-            payload["systemInstruction"] = {"parts": instructions}
-        return payload
+        return google.payload(self, messages, temperature, max_tokens)
 
     def _chat_google_ai_studio(self, messages: List[Dict[str, str]], model: str, api_key: str,
                                base_url: str, temperature: float, max_tokens: int, timeout: int) -> Optional[str]:
         """Communicate with the Google AI Studio API"""
-        # The key goes in a header, never in the query string: URLs leak into
-        # logs, proxies and exception messages.
-        url = f"{base_url}/models/{model}:generateContent"
-        headers = {"x-goog-api-key": api_key}
-
-        payload = self._google_payload(messages, temperature, max_tokens)
-
-        try:
-            response = self._make_request(url, payload, headers, timeout)
-            try:
-                data = response.json()
-            finally:
-                close_response(response)
-
-            self._record_usage("google_ai_studio", data)
-
-            if not data.get("candidates"):
-                # Bloqueio de segurança: sem isto o utilizador via uma
-                # resposta vazia sem saber que foi um filtro do provider.
-                block_reason = (data.get("promptFeedback") or {}).get("blockReason")
-                if block_reason:
-                    logger.warning(
-                        "Google AI Studio blocked the prompt: %s", block_reason
-                    )
-                    return f"[blocked by safety filters: {block_reason}]"
-                logger.warning("No candidates in Google AI Studio response")
-                return ""
-
-            # Respostas multi-part: só parts[0] truncava o texto (o caminho
-            # streaming junta todas — inconsistentes entre si).
-            parts = (data["candidates"][0].get("content") or {}).get("parts") or []
-            texts = [part.get("text", "") for part in parts if isinstance(part, dict)]
-            return "".join(texts)
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing Google AI Studio JSON: {e}")
-            return None
-        except (KeyError, IndexError, TypeError) as e:
-            logger.error(f"Invalid response format from Google AI Studio: {e}")
-            return None
-        except AIProviderError:
-            raise
-        except Exception as e:
-            logger.error(f"Google AI Studio error: {redact_url(str(e))}")
-            return None
+        return google.chat(self, messages, model, api_key, base_url,
+                           temperature, max_tokens, timeout)
 
     @staticmethod
     def _split_anthropic_messages(messages: List[Dict[str, str]]):
@@ -1459,206 +1218,37 @@ class AIClient:
         The UI history gives no such guarantees — a failed/cancelled turn
         can leave two `user` in a row (o pedido morria com 400).
         """
-        system_parts = []
-        converted: list[dict[str, Any]] = []
-        for msg in messages:
-            role = msg.get("role")
-            content = msg.get("content", "")
-            if role == "system":
-                system_parts.append(content)
-            elif role in ("user", "assistant"):
-                if converted and converted[-1]["role"] == role:
-                    # Fundir consecutivas do mesmo papel numa só
-                    converted[-1]["content"] = f"{converted[-1]['content']}\n\n{content}"
-                else:
-                    converted.append({"role": role, "content": content})
-        # A API rejeita histórico que não comece por `user`
-        while converted and converted[0]["role"] != "user":
-            converted.pop(0)
-        return "\n\n".join(system_parts), converted
+        return anthropic.split_messages(messages)
 
     def _chat_anthropic(self, messages: List[Dict[str, str]], model: str, api_key: str,
                         base_url: str, temperature: float, max_tokens: int, timeout: int) -> Optional[str]:
         """Communicate with the Anthropic Claude API"""
-        url = f"{base_url}/messages"
-        system_prompt, anthropic_messages = self._split_anthropic_messages(messages)
-
-        payload = {
-            "model": model,
-            "messages": anthropic_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        if system_prompt:
-            payload["system"] = system_prompt
-
-        # `anthropic-version` is a required header; `x-api-key` is the auth.
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            response = self._make_request(url, payload, headers, timeout)
-            try:
-                data = response.json()
-            finally:
-                close_response(response)
-
-            self._record_usage("anthropic", data)
-
-            if data.get("type") == "error":
-                logger.error("Anthropic error: %s", _safe_provider_error(data.get('error', {}).get('message', 'Unknown')))
-                return None
-
-            # Get content from the first reply
-            content = data.get("content")
-            if isinstance(content, list):
-                texts = [c.get("text", "") for c in content if c.get("type") == "text"]
-                return "".join(texts)
-            if isinstance(content, dict):
-                return content.get("text", "")
-            return ""
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing Anthropic JSON: {redact_url(str(e))}")
-            return None
-        except KeyError as e:
-            logger.error(f"Invalid response format from Anthropic: {redact_url(str(e))}")
-            return None
-        except (AIRequestCancelled, AIResponseLimitError):
-            raise
-        except Exception as e:
-            logger.error(f"Anthropic error: {redact_url(str(e))}")
-            return None
+        return anthropic.chat(self, messages, model, api_key, base_url,
+                              temperature, max_tokens, timeout)
 
     def _chat_mistral(self, messages: List[Dict[str, str]], model: str, api_key: str,
                       base_url: str, temperature: float, max_tokens: int, timeout: int) -> Optional[str]:
         """Communicate with the Mistral AI API"""
-        url = f"{base_url}/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        try:
-            return self._chat_openai_style("mistral", url, payload, headers, timeout)
-        except (AIRequestCancelled, AIResponseLimitError):
-            raise
-        except AIProviderError as e:
-            logger.error(f"Mistral error: {redact_url(str(e))}")
-            return None
+        return mistral.chat(self, messages, model, api_key, base_url,
+                            temperature, max_tokens, timeout)
 
     def _chat_groq(self, messages: List[Dict[str, str]], model: str, api_key: str,
                    base_url: str, temperature: float, max_tokens: int, timeout: int) -> Optional[str]:
         """Communicate with the Groq API"""
-        url = f"{base_url}/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        try:
-            return self._chat_openai_style("groq", url, payload, headers, timeout)
-        except (AIRequestCancelled, AIResponseLimitError):
-            raise
-        except AIProviderError as e:
-            logger.error(f"Groq error: {redact_url(str(e))}")
-            return None
+        return groq.chat(self, messages, model, api_key, base_url,
+                         temperature, max_tokens, timeout)
 
     def _chat_cohere(self, messages: List[Dict[str, str]], model: str, api_key: str,
                      base_url: str, temperature: float, max_tokens: int, timeout: int) -> Optional[str]:
         """Communicate with the Cohere API (v1 /chat contract)."""
-        url = f"{base_url}/chat"
-
-        # v1 expects a top-level `message` plus `chat_history` with the
-        # role/message pairs - not an OpenAI-style `messages` array.
-        chat_history = []
-        preamble_parts = []
-        last_user_text = ""
-        for msg in messages:
-            role = msg["role"]
-            if role == "system":
-                preamble_parts.append(msg["content"])
-            elif role == "user":
-                chat_history.append({"role": "USER", "message": msg["content"]})
-            elif role == "assistant":
-                chat_history.append({"role": "CHATBOT", "message": msg["content"]})
-        # The final user turn is the `message`, not part of the history
-        if chat_history and chat_history[-1]["role"] == "USER":
-            last_user_text = chat_history.pop()["message"]
-
-        # v1 responde 400 com `message` vazio (histórico que termina em
-        # assistant ou só tem system): falhar cedo e claro.
-        if not last_user_text:
-            raise AIProviderError(
-                "Cohere requires a final user message; history ends without one"
-            )
-
-        payload = {
-            "model": model,
-            "message": last_user_text,
-            "chat_history": chat_history,
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-        if preamble_parts:
-            payload["preamble"] = "\n\n".join(preamble_parts)
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            response = self._make_request(url, payload, headers, timeout)
-            try:
-                data = response.json()
-            finally:
-                close_response(response)
-
-            meta = data.get("meta") or {}
-            self._record_usage("cohere", {"usage": meta.get("billed_units") or meta.get("tokens") or {}})
-            return data.get("text") or ""
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing Cohere JSON: {redact_url(str(e))}")
-            return None
-        except KeyError as e:
-            logger.error(f"Invalid response format from Cohere: {redact_url(str(e))}")
-            return None
-        except (AIRequestCancelled, AIResponseLimitError):
-            raise
-        except Exception as e:
-            logger.error(f"Cohere error: {redact_url(str(e))}")
-            return None
+        return cohere.chat(self, messages, model, api_key, base_url,
+                           temperature, max_tokens, timeout)
 
     def _chat_local_llm(self, messages: List[Dict[str, str]], model: str, api_key: str,
                         base_url: str, temperature: float, max_tokens: int, timeout: int) -> Optional[str]:
         """Communicate with a local model (Ollama, etc)"""
-        url = f"{base_url}/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-        try:
-            return self._chat_openai_style("local_llm", url, payload, {}, timeout)
-        except (AIRequestCancelled, AIResponseLimitError):
-            raise
-        except AIProviderError as e:
-            logger.error(f"Local model error: {redact_url(str(e))}")
-            return None
+        return local_llm.chat(self, messages, model, api_key, base_url,
+                              temperature, max_tokens, timeout)
 
     def stream_chat(self, messages: List[Dict[str, str]], provider: Optional[str] = None, model: Optional[str] = None,
                     temperature: float = 0.7, max_tokens: int = 2000,
@@ -1761,198 +1351,41 @@ class AIClient:
     def _stream_openrouter(self, messages: List[Dict[str, str]], model: str, api_key: str,
                            base_url: str, temperature: float, max_tokens: int, timeout: int):
         """Stream with OpenRouter."""
-        url = f"{base_url}/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/1400015/linux_ai",
-            "X-Title": "Linux AI Assistant"
-        }
-        yield from self._stream_openai_style("openrouter", url, payload,
-                                             headers, timeout, messages)
+        yield from openrouter.stream(self, messages, model, api_key, base_url,
+                                     temperature, max_tokens, timeout)
 
     def _stream_anthropic(self, messages: List[Dict[str, str]], model: str, api_key: str,
                           base_url: str, temperature: float, max_tokens: int, timeout: int):
         """Stream with Anthropic Claude."""
-        url = f"{base_url}/messages"
-
-        system_prompt, anthropic_messages = self._split_anthropic_messages(messages)
-
-        payload = {
-            "model": model,
-            "messages": anthropic_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": True
-        }
-        if system_prompt:
-            payload["system"] = system_prompt
-
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-
-        usage_events: List[Dict] = []
-        received: List[str] = []
-        try:
-            response = self._make_request(url, payload, headers, timeout, stream=True)
-            try:
-                for chunk in _bounded_text(self._iter_sse_anthropic(response, usage_events)):
-                    received.append(chunk)
-                    yield chunk
-            finally:
-                close_response(response)
-                self._finish_stream_usage("anthropic", usage_events, messages,
-                                          "".join(received))
-        except AIProviderError:
-            raise
-        except Exception as e:
-            raise AIProviderError(
-                f"anthropic stream error: {redact_url(str(e))}"
-            ) from e
+        yield from anthropic.stream(self, messages, model, api_key, base_url,
+                                    temperature, max_tokens, timeout)
 
     def _stream_mistral(self, messages: List[Dict[str, str]], model: str, api_key: str,
                         base_url: str, temperature: float, max_tokens: int, timeout: int):
         """Stream with Mistral AI."""
-        url = f"{base_url}/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        yield from self._stream_openai_style("mistral", url, payload,
-                                             headers, timeout, messages)
+        yield from mistral.stream(self, messages, model, api_key, base_url,
+                                  temperature, max_tokens, timeout)
 
     def _stream_groq(self, messages: List[Dict[str, str]], model: str, api_key: str,
                      base_url: str, temperature: float, max_tokens: int, timeout: int):
         """Stream with Groq."""
-        url = f"{base_url}/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        yield from self._stream_openai_style("groq", url, payload,
-                                             headers, timeout, messages)
+        yield from groq.stream(self, messages, model, api_key, base_url,
+                               temperature, max_tokens, timeout)
 
     def _stream_cohere(self, messages: List[Dict[str, str]], model: str, api_key: str,
                        base_url: str, temperature: float, max_tokens: int, timeout: int):
         """Stream with Cohere (v1 contract, same as _chat_cohere)."""
-        url = f"{base_url}/chat"
-
-        chat_history = []
-        preamble_parts = []
-        last_user_text = ""
-        for msg in messages:
-            role = msg["role"]
-            if role == "system":
-                preamble_parts.append(msg["content"])
-            elif role == "user":
-                chat_history.append({"role": "USER", "message": msg["content"]})
-            elif role == "assistant":
-                chat_history.append({"role": "CHATBOT", "message": msg["content"]})
-        if chat_history and chat_history[-1]["role"] == "USER":
-            last_user_text = chat_history.pop()["message"]
-        # Mesmo guard do caminho não-streaming: v1 responde 400 com
-        # `message` vazio.
-        if not last_user_text:
-            raise AIProviderError(
-                "Cohere requires a final user message; history ends without one"
-            )
-
-        payload = {
-            "model": model,
-            "message": last_user_text,
-            "chat_history": chat_history,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True
-        }
-        if preamble_parts:
-            payload["preamble"] = "\n\n".join(preamble_parts)
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        usage_events: list[Any] = []
-        received: list[Any] = []
-        try:
-            response = self._make_request(url, payload, headers, timeout, stream=True)
-            try:
-                for chunk in _bounded_text(self._iter_sse_cohere(response, usage_events)):
-                    received.append(chunk)
-                    yield chunk
-            finally:
-                close_response(response)
-                self._finish_stream_usage("cohere", usage_events, messages, "".join(received))
-        except AIProviderError:
-            raise
-        except Exception as e:
-            raise AIProviderError(
-                f"cohere stream error: {redact_url(str(e))}"
-            ) from e
+        yield from cohere.stream(self, messages, model, api_key, base_url,
+                                 temperature, max_tokens, timeout)
 
     def _stream_google_ai_studio(self, messages: List[Dict[str, str]], model: str, api_key: str,
                                  base_url: str, temperature: float, max_tokens: int, timeout: int):
         """Stream with Google AI Studio (streamGenerateContent, SSE)."""
-        # `alt=sse` makes the endpoint emit `data: {...}` lines; the API key
-        # travels in a header so it never ends up in a logged URL.
-        url = f"{base_url}/models/{model}:streamGenerateContent?alt=sse"
-        headers = {"x-goog-api-key": api_key}
-
-        payload = self._google_payload(messages, temperature, max_tokens)
-
-        usage_events: List[Dict] = []
-        received: List[str] = []
-        try:
-            response = self._make_request(url, payload, headers, timeout, stream=True)
-            try:
-                for chunk in _bounded_text(self._iter_sse_google(response, usage_events)):
-                    received.append(chunk)
-                    yield chunk
-            finally:
-                close_response(response)
-                self._finish_stream_usage("google_ai_studio", usage_events,
-                                          messages, "".join(received))
-        except AIProviderError:
-            raise
-        except Exception as e:
-            raise AIProviderError(
-                f"google_ai_studio stream error: {redact_url(str(e))}"
-            ) from e
+        yield from google.stream(self, messages, model, api_key, base_url,
+                                 temperature, max_tokens, timeout)
 
     def _stream_local_llm(self, messages: List[Dict[str, str]], model: str, api_key: str,
                           base_url: str, temperature: float, max_tokens: int, timeout: int):
         """Stream with a local model."""
-        url = f"{base_url}/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True
-        }
-        yield from self._stream_openai_style("local_llm", url, payload,
-                                             {}, timeout, messages)
+        yield from local_llm.stream(self, messages, model, api_key, base_url,
+                                    temperature, max_tokens, timeout)

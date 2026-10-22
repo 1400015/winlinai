@@ -136,6 +136,18 @@ files = [
     "src/platform/shell_pwsh.py",
     # Updater
     "src/updater.py",
+    # Provider split (shared errors + per-provider request modules)
+    "src/ai_errors.py",
+    "src/ai_providers/__init__.py",
+    "src/ai_providers/sse.py",
+    "src/ai_providers/openai_style.py",
+    "src/ai_providers/openrouter.py",
+    "src/ai_providers/google.py",
+    "src/ai_providers/anthropic.py",
+    "src/ai_providers/mistral.py",
+    "src/ai_providers/groq.py",
+    "src/ai_providers/cohere.py",
+    "src/ai_providers/local_llm.py",
 ]
 
 # Read the types of imported modules without gating their existing diagnostics.

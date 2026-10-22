@@ -560,7 +560,9 @@ linux_ai_assistant/
 ├── src/
 │   ├── __init__.py
 │   ├── app.py              # Main application
-│   ├── ai_client.py        # AI APIs client
+│   ├── ai_client.py        # AI APIs client (transport, retry, usage)
+│   ├── ai_errors.py        # Provider exceptions and URL redaction
+│   ├── ai_providers/       # Per-provider chat/stream implementations
 │   ├── config_manager.py   # Configuration manager
 │   ├── credential_settings.py # Stored-key editing and explicit migration
 │   ├── credential_store.py # Optional Linux Secret Service backend
@@ -652,16 +654,20 @@ inside a `void-packages` checkout before installing the resulting binary from
 
 ### Adding New Providers
 
-Edit `src/ai_client.py` and add a new method for the provider:
+Built-in providers live in `src/ai_providers/` (one module per provider).
+Add `chat`/`stream` functions there and expose them through the thin
+`_chat_<provider>` / `_stream_<provider>` methods on `AIClient`: `chat()` and
+`stream_chat()` dispatch by those names automatically. The shared transport,
+retry policy, usage accounting and stream limits stay in `ai_client.py`.
+
+Plugins keep the older contract and register a runtime method with the same
+naming scheme:
 
 ```python
 def _chat_new_provider(self, messages, model, api_key, base_url, temperature, max_tokens, timeout):
     # Implement logic for the new provider
     pass
 ```
-
-Then register the provider in the `chat`/`stream_chat` dispatch (methods are
-looked up automatically as `_chat_<provider>` / `_stream_<provider>`).
 
 **Plugins are opt-in** (v1.1.0): a plugin is arbitrary code that runs with
 your user privileges at startup, so only files listed in the `plugins.enabled`
