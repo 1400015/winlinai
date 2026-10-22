@@ -188,9 +188,12 @@ exclude_also = [
     "if __name__ == .__main__.:",
     "@abstractmethod",
 ]
-# Floor for the platform-independent core. It is enforced by
-# scripts/check_coverage.py and must never be lowered to make a change pass.
-# The value is calibrated from the first measured CI run.
-[tool.coverage.core_floor]
-percent = 0.0
+# Floors enforced by scripts/check_coverage.py. A group without a floor is
+# only reported: the Linux job cannot execute the Qt shell or the native
+# Windows modules, so those are verified by their own jobs instead.
+# The values are calibrated from the measured CI run and must never be
+# lowered to make a change pass.
+[tool.coverage.floors]
+core = 78.0
+gtk = 70.0
 

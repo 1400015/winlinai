@@ -29,13 +29,16 @@ QT_MARKER = re.compile(r"^\s*(from PySide6|import PySide6)", re.MULTILINE)
 WINDOWS_MARKER = re.compile(r"^\s*(import winreg|from winreg)", re.MULTILINE)
 
 
-def read_floor():
-    """Read the configured floor from pyproject.toml."""
+def read_floors():
+    """Read the configured floors per group from pyproject.toml."""
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    match = re.search(r"\[tool\.coverage\.core_floor\]\s*percent\s*=\s*([0-9.]+)", text)
+    match = re.search(r"\[tool\.coverage\.floors\](.*?)(?=\n\[|\Z)", text, re.DOTALL)
     if not match:
-        raise SystemExit("pyproject.toml has no [tool.coverage.core_floor] percent value")
-    return float(match.group(1))
+        raise SystemExit("pyproject.toml has no [tool.coverage.floors] table")
+    floors = {}
+    for name, value in re.findall(r"(\w+)\s*=\s*([0-9.]+)", match.group(1)):
+        floors[name] = float(value)
+    return floors
 
 
 def platform_specific(relative_path):
@@ -80,45 +83,46 @@ def summarize(report, names):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--floor", type=float, default=None,
-                        help="override the configured floor")
+                        help="override the floor of the core group")
     parser.add_argument("--report-only", action="store_true",
                         help="report the numbers without failing")
     parser.add_argument("--top", type=int, default=15,
                         help="how many weak modules to list")
     arguments = parser.parse_args()
 
-    floor = read_floor() if arguments.floor is None else arguments.floor
+    floors = read_floors()
+    if arguments.floor is not None:
+        floors["core"] = arguments.floor
     report = load_report()
     files = report.get("files", {})
 
-    core = []
-    other = {}
+    groups = {"core": [], "gtk": [], "qt": [], "windows": []}
     for name in sorted(files):
         relative = name.replace("\\", "/")
         if not relative.startswith("src/"):
             continue
-        kind = platform_specific(relative)
-        if kind is None:
-            core.append(name)
-        else:
-            other[name] = kind
+        kind = platform_specific(relative) or "core"
+        groups[kind].append(name)
 
-    core_covered, core_total, core_percent = summarize(report, core)
+    measured = {}
+    for kind, names in groups.items():
+        covered, total, percent = summarize(report, names)
+        measured[kind] = (covered, total, percent)
+
     all_covered, all_total, all_percent = summarize(report, sorted(files))
 
     print("Coverage report (branch mode)")
-    print("  core (platform independent) : {} / {} statements = {}%".format(
-        core_covered, core_total, core_percent))
-    print("  every measured module        : {} / {} statements = {}%".format(
-        all_covered, all_total, all_percent))
-    for kind in sorted(set(other.values())):
-        names = [name for name, value in other.items() if value == kind]
-        covered, total, percent = summarize(report, names)
-        print("  {:<27} : {} / {} statements = {}%".format(
-            kind + " modules (reported only)", covered, total, percent))
+    for kind in ("core", "gtk", "qt", "windows"):
+        covered, total, percent = measured[kind]
+        floor = floors.get(kind)
+        marker = "floor {}%".format(floor) if floor else "reported only"
+        print("  {:<27} : {} / {} statements = {}%  ({})".format(
+            kind + " modules", covered, total, percent, marker))
+    print("  {:<27} : {} / {} statements = {}%".format(
+        "every measured module", all_covered, all_total, all_percent))
 
     weak = []
-    for name in core:
+    for name in groups["core"]:
         entry = files[name]
         summary = entry["summary"]
         total = summary["num_statements"] + summary.get("num_branches", 0)
@@ -135,15 +139,23 @@ def main():
             if first:
                 print("         missing lines: {}".format(first))
 
-    print("\nCoverage floor for the core: {}%".format(floor))
     if arguments.report_only:
-        print("Report only: the floor was not enforced.")
+        print("\nReport only: the floors were not enforced.")
         return 0
-    if core_percent < floor:
-        print("FAILED: the core covers {}% and the floor is {}%.".format(core_percent, floor),
-              file=sys.stderr)
+
+    failures = []
+    for kind, floor in sorted(floors.items()):
+        if not floor:
+            continue
+        percent = measured.get(kind, (0, 0, 0.0))[2]
+        if percent < floor:
+            failures.append("{} covers {}% and the floor is {}%".format(kind, percent, floor))
+    if failures:
+        for failure in failures:
+            print("FAILED: " + failure, file=sys.stderr)
         return 1
-    print("OK: the core covers {}% (floor {}%).".format(core_percent, floor))
+    print("\nOK: every group with a floor reached it ({}).".format(
+        ", ".join("{} {}%".format(kind, measured[kind][2]) for kind in sorted(floors) if floors[kind])))
     return 0
 
 
