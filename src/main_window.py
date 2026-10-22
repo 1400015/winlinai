@@ -1263,7 +1263,7 @@ class MainWindow(Gtk.Window):
         if getattr(self, '_history_recovering', False):
             return
         if (any(controller.active for controller in getattr(self, '_file_action_controllers', ()))
-                or getattr(self, '_file_recovery_active', 0)):
+                or getattr(self, '_file_recovery_active', False)):
             self._add_system_message(_("Wait for the approved file operation to finish before recovering history."))
             return
         from .history_recovery import recover_history
@@ -1454,7 +1454,7 @@ class MainWindow(Gtk.Window):
             route = {'provider': provider, 'ready': self.ai_client.provider_ready(provider)}
         except AIProviderError:
             route = {'provider': None, 'ready': False}
-        images = ()
+        images: tuple = ()
         document_context = ''
         try:
             if image is not None:

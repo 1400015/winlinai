@@ -44,8 +44,8 @@ def _trusted(path, executable=False, interpreter_link=False, _seen=None):
             destination = os.readlink(str(path))
             if not os.path.isabs(destination):
                 destination = os.path.join(str(path.parent), destination)
-            destination = Path(os.path.normpath(destination))
-            return _trusted(destination, executable=executable, interpreter_link=True, _seen=seen)
+            destination_path = Path(os.path.normpath(destination))
+            return _trusted(destination_path, executable=executable, interpreter_link=True, _seen=seen)
         if info.st_mode & 0o022:
             raise PermissionError('Privileged helper paths must not be writable by other users: ' + str(current))
         expected = stat.S_ISREG if current == path else stat.S_ISDIR

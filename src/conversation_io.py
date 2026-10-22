@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import stat
+from typing import Optional
 
 MAX_IMPORT_BYTES = 2 * 1024 * 1024
 
@@ -20,9 +21,10 @@ def read_conversation(path):
 
 def write_conversation(path, content):
     """Do not replace an existing file without a separate explicit action."""
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd: Optional[int] = descriptor
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             fd = None
             stream.write(content)
             stream.flush()

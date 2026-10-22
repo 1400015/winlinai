@@ -235,14 +235,14 @@ class PackageService:
         return PackageCandidate(name, version, source, _summary(summary))
 
     def search(self, query: str) -> Tuple[List[PackageCandidate], str]:
-        query = _query(query)
-        if query is None:
+        cleaned = _query(query)
+        if cleaned is None:
             return [], "Use a plain package name or search text (up to 128 characters)."
         error = self._available()
         if error:
             return [], error
-        argv = (["apt-cache", "search", "--", _literal_pattern(query)] if self.manager == "apt"
-                else ["xbps-query", "-R", "--regex", "-s", _literal_pattern(query)])
+        argv = (["apt-cache", "search", "--", _literal_pattern(cleaned)] if self.manager == "apt"
+                else ["xbps-query", "-R", "--regex", "-s", _literal_pattern(cleaned)])
         deadline = time.monotonic() + SEARCH_BUDGET
         ok, text = self._call(argv, timeout=20)
         if not ok:
@@ -257,7 +257,7 @@ class PackageService:
             if _name(name) and name not in names:
                 names.append(name)
         # Prefer an exact name over similarly named libraries and plugins.
-        names.sort(key=lambda name: (name.lower() != query.lower(), name.lower()))
+        names.sort(key=lambda name: (name.lower() != cleaned.lower(), name.lower()))
         candidates = []
         for name in names[:MAX_CANDIDATES]:
             remaining = deadline - time.monotonic()

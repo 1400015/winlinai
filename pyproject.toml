@@ -148,6 +148,22 @@ files = [
     "src/ai_providers/groq.py",
     "src/ai_providers/cohere.py",
     "src/ai_providers/local_llm.py",
+    # Assistant core and desktop shells (typing phase 3)
+    "src/ai_client.py",
+    "src/schema_validation.py",
+    "src/device_actions.py",
+    "src/conversation_actions.py",
+    "src/diagnostics.py",
+    "src/package_actions.py",
+    "src/stream_events.py",
+    "src/device_dialogs.py",
+    "src/conversation_dialog.py",
+    "src/chat_view.py",
+    "src/main_window.py",
+    "src/app.py",
+    "src/qt_file_dialogs.py",
+    # WSL bridge: parses wsl.exe output and builds validated probe argv.
+    "src/platform/wsl_bridge.py",
 ]
 
 # Read the types of imported modules without gating their existing diagnostics.
@@ -161,7 +177,9 @@ show_error_codes = true
 
 # Ignore missing imports for optional/platform-specific dependencies
 [[tool.mypy.overrides]]
-module = ["winreg", "gi.*", "PIL.*", "psutil", "pytesseract", "yaml"]
+module = ["winreg", "gi.*", "PIL.*", "psutil", "pytesseract", "yaml",
+          "win32api", "win32con", "win32file", "win32security", "pywintypes",
+          "ntsecuritycon", "notify2", "jsonschema"]
 ignore_missing_imports = true
 
 # Modules that use POSIX-only APIs (os.O_NOFOLLOW, os.getuid, os.killpg,
@@ -173,13 +191,26 @@ ignore_missing_imports = true
 [tool.typecheck]
 posix_files = [
     "src/action_audit.py",
+    "src/change_journal.py",
     "src/config_manager.py",
+    "src/conversation_io.py",
+    "src/document_store.py",
+    "src/global_shortcuts.py",
+    "src/privileged_helpers.py",
+    "src/privileged_service.py",
+    "src/privileged_write.py",
     "src/process_output.py",
     "src/remote_models.py",
+    "src/screenshot_portal.py",
+    "src/storage.py",
     "src/system_utils.py",
+    "src/trial_recorder.py",
 ]
 # Modules that only exist on native Windows. The Windows leg checks them.
-windows_files = []
+windows_files = [
+    "src/platform/windows_files.py",
+    "src/platform/windows_process.py",
+]
 
 # Coverage measurement for the platform-independent core.
 # The Linux job measures the core and the GTK track; the Qt and native

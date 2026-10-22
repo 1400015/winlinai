@@ -397,7 +397,7 @@ def run_bounded(argv, timeout, limit, env=None):
             warning = _WSL_CLEANUP_UNCERTAINTY
         if failure is not None:
             if warning:
-                failure.cleanup_uncertainty = warning
+                setattr(failure, 'cleanup_uncertainty', warning)
             if isinstance(failure, subprocess.TimeoutExpired):
                 failure.output = _decode_output(output['stdout'], api.legacy_encoding)
                 failure.stderr = _decode_output(output['stderr'], api.legacy_encoding)

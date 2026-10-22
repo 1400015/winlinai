@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import uuid
+from typing import Any
 
 logger = logging.getLogger(__name__)
 APPLICATION_ID = 'io.github.linux_ai_assistant'
@@ -95,7 +96,7 @@ class GlobalShortcut:
             display = Gdk.Display.get_default()
             display_type = type(display).__name__.lower() if display is not None else ''
             if 'wayland' in display_type or os.environ.get('XDG_SESSION_TYPE') == 'wayland':
-                backend = PortalShortcut(self.callback, self._status)
+                backend: Any = PortalShortcut(self.callback, self._status)
             elif 'x11' in display_type or (not display_type and os.environ.get('DISPLAY')):
                 backend = X11Shortcut(self.callback, self._status)
             else:
@@ -170,7 +171,7 @@ class PortalShortcut:
         sender = self.connection.get_unique_name().lstrip(':').replace('.', '_')
         request_path = PORTAL_PATH + '/request/' + sender + '/' + token
         self.pending_requests.add(request_path)
-        holder = []
+        holder: list = []
 
         def response(_connection, _sender, _path, _interface, _signal, parameters):
             self._unsubscribe(holder[0])
@@ -315,7 +316,7 @@ class X11Shortcut:
         self.callback = callback
         self.status_changed = status_changed
         self.display = None
-        self.lib = None
+        self.lib: Any = None
         self.source = None
         self.keycode = None
         self.masks = []

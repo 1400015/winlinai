@@ -12,6 +12,7 @@ import secrets
 import shutil
 import stat
 import sys
+from typing import Any, Dict
 
 
 SENSITIVE_FILES = frozenset({
@@ -104,8 +105,8 @@ class FileOperationError(PermissionError):
 
 @contextmanager
 def _operation(destination, directory_fd):
-    state = {'published': False, 'backup': None, 'backup_valid': False,
-             'temporary': None, 'fds': [directory_fd]}
+    state: Dict[str, Any] = {'published': False, 'backup': None, 'backup_valid': False,
+                             'temporary': None, 'fds': [directory_fd]}
     error = None
     try:
         yield state
@@ -202,6 +203,7 @@ def write_file(source, destination, expected_digest, parent_identity, source_dig
             raise PermissionError('File changed since the preview; review it again')
 
         if original is not None:
+            assert original_fd is not None
             backup_fd, backup = _backup_file(directory_fd, destination, backup_path)
             state['backup'] = backup
             with os.fdopen(backup_fd, 'wb') as out, os.fdopen(os.dup(original_fd), 'rb') as inp:

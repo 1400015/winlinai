@@ -44,8 +44,8 @@ def confirm_file_write_qt(parent, path: str, content: str, is_new: bool = False)
 
     # Path header
     header = QtWidgets.QLabel(f"<b>{escape(path)}</b>")
-    header.setTextFormat(QtCore.Qt.RichText)
-    header.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+    header.setTextFormat(QtCore.Qt.TextFormat.RichText)
+    header.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
     layout.addWidget(header)
 
     # Content preview (scrollable)
@@ -64,9 +64,10 @@ def confirm_file_write_qt(parent, path: str, content: str, is_new: bool = False)
 
     # Buttons
     button_box = QtWidgets.QDialogButtonBox()
-    button_box.addButton(_("Cancel"), QtWidgets.QDialogButtonBox.RejectRole)
-    write_btn = button_box.addButton(_("Write file"), QtWidgets.QDialogButtonBox.AcceptRole)
-    write_btn.setDefault(True)
+    button_box.addButton(_("Cancel"), QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+    write_btn = button_box.addButton(_("Write file"), QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
+    if write_btn is not None:
+        write_btn.setDefault(True)
     # Roles alone do not close the dialog: wire accepted/rejected to the
     # dialog result so a click on each button concludes it.
     button_box.accepted.connect(dialog.accept)
@@ -75,7 +76,7 @@ def confirm_file_write_qt(parent, path: str, content: str, is_new: bool = False)
 
     # Show dialog
     result = dialog.exec()
-    return result == QtWidgets.QDialog.Accepted
+    return result == QtWidgets.QDialog.DialogCode.Accepted
 
 
 def confirm_file_delete_qt(parent, path: str) -> bool:
@@ -98,10 +99,10 @@ def confirm_file_delete_qt(parent, path: str) -> bool:
         parent,
         _("Delete file"),
         _("Delete this file?\n\n{path}\n\nA backup will be created.").format(path=path),
-        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-        QtWidgets.QMessageBox.No,
+        QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+        QtWidgets.QMessageBox.StandardButton.No,
     )
-    return reply == QtWidgets.QMessageBox.Yes
+    return reply == QtWidgets.QMessageBox.StandardButton.Yes
 
 
 def show_file_info_qt(parent, info: dict):

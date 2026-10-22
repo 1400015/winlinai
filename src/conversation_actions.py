@@ -336,7 +336,7 @@ class ConversationActions:
         """Return None for ordinary chat; never route pasted multi-line data."""
         requested_current = is_current if is_current is not None else lambda: True
 
-        def is_current():
+        def still_current():
             return not self._closed and requested_current()
         if self._closed:
             return ActionReply(_say(lang, 'Tarefa cancelada.', 'Task cancelled.'), 'cancelled')
@@ -378,7 +378,7 @@ class ConversationActions:
         refusal_text = re.sub(r'\bno monitor\s+[a-z0-9_.:-]+\b', '', normalize(message))
         if _HYPOTHETICAL_RE.search(message) or _is_refusal(refusal_text):
             return None
-        extended = self._extended_request(message, text, session_id, lang, can_execute, is_current)
+        extended = self._extended_request(message, text, session_id, lang, can_execute, still_current)
         if extended is not None:
             return extended
         if re.match(r'^(?:configura|configurar|configure)\s+(?:e|and)\s+', text):
@@ -421,31 +421,31 @@ class ConversationActions:
                 if state["kind"] == "packages":
                     candidate = PackageCandidate.from_dict(state["options"][selection])
                     if state["operation"] == "install" or _INSTALL.search(text):
-                        return self._install(session_id, candidate, lang, can_execute, is_current)
+                        return self._install(session_id, candidate, lang, can_execute, still_current)
                     self._save(session_id, "packages", "inspect", state["query"], [candidate], persist_choices)
                     return self._render_packages([candidate], "inspect", lang)
                 mode = DisplayMode.from_dict(state["options"][selection])
                 if state["operation"] == "set_mode" or _CHANGE.search(text):
-                    return self._apply_display(session_id, mode, lang, can_execute, is_current)
+                    return self._apply_display(session_id, mode, lang, can_execute, still_current)
                 self._save(session_id, "display", "inspect", state["query"], [mode], persist_choices)
                 return self._render_display([mode], lang)
         request = self._package_request(text)
         if request is not None and self.manager in SUPPORTED_MANAGERS:
             operation, query = request
-            choices = self._package_choices(session_id, operation, query, lang, persist_choices, is_current)
+            choices = self._package_choices(session_id, operation, query, lang, persist_choices, still_current)
             if isinstance(choices, ActionReply):
                 return choices
             exact = [item for item in choices if item.name.casefold() == query.casefold()]
             if operation == "install" and len(exact) == 1:
-                return self._install(session_id, exact[0], lang, can_execute, is_current)
+                return self._install(session_id, exact[0], lang, can_execute, still_current)
             return self._render_packages(choices, operation, lang)
         display_request = self._display_request(text)
         if display_request is not None:
-            if is_current():
+            if still_current():
                 self._clear(session_id)
-            result = self._invoke('display.list_modes', {}, session_id, is_current)
+            result = self._invoke('display.list_modes', {}, session_id, still_current)
             modes, error = result.data or [], result.text
-            if not is_current():
+            if not still_current():
                 return ActionReply(_say(lang, "Tarefa cancelada.", "Task cancelled."), "cancelled")
             if error:
                 return ActionReply(error, "failed", "display.list_modes")
@@ -456,7 +456,7 @@ class ConversationActions:
                 modes = [modes[index] for index in matches]
             self._save(session_id, "display", display_request, "monitors", modes, persist_choices)
             if display_request == "set_mode" and matches is not None and len(matches) == 1:
-                return self._apply_display(session_id, modes[0], lang, can_execute, is_current)
+                return self._apply_display(session_id, modes[0], lang, can_execute, still_current)
             return self._render_display(modes, lang)
         return None
 

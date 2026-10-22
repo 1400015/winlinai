@@ -32,7 +32,7 @@ from .process_output import CLEANUP_UNCERTAINTY, run_bounded
 # placeholders). Keeping them as lists avoids any shell-injection surface.
 # --------------------------------------------------------------------------
 
-PKG_MANAGERS = {
+PKG_MANAGERS: Dict[str, Dict[str, Any]] = {
     "xbps": {
         "install": ["xbps-install", "-Sy", "{pkg}"],
         "remove": ["xbps-remove", "-Ry", "{pkg}"],

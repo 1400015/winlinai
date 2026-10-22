@@ -299,7 +299,7 @@ def open_regular(path, writable=False, create=False, exclusive=False, private=Fa
             try:
                 os.close(descriptor)
             except OSError as cleanup_error:
-                error.descriptor_cleanup_error = cleanup_error
+                setattr(error, 'descriptor_cleanup_error', cleanup_error)
         raise
 
 

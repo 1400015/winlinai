@@ -73,7 +73,7 @@ def show_conversations(window):
     box.pack_start(scroll, True, True, 0)
     notice = Gtk.Label(xalign=0, wrap=True)
     box.pack_start(notice, False, False, 0)
-    metadata = {}
+    metadata: dict = {}
 
     def refresh(selected=None):
         sessions = store.list_sessions(include_archived=True)

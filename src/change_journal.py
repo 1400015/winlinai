@@ -136,7 +136,7 @@ class ChangeJournal:
 
     def list_changes(self, session_id=None, include_archived=False):
         with json_lock(self.path):
-            records = []
+            records: list = []
             if include_archived:
                 for path in self._archive_paths():
                     records.extend(dict(item, archive_id=path.stem) for item in self._read(path)['changes'])

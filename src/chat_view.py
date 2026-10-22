@@ -146,8 +146,9 @@ class ChatView:
             self.clear_loading()
             self._stream_start, self._stream_end, self.body_start = self.append_stream_header()
         start = self._stream_end
+        assert start is not None
         self.buffer.insert(self.buffer.get_iter_at_offset(start), chunk)
-        self._stream_end += len(chunk)
+        self._stream_end = start + len(chunk)
         self._tag_region(self.buffer, 'ai-message', self.buffer.get_iter_at_offset(start),
                          self.buffer.get_iter_at_offset(self._stream_end))
 

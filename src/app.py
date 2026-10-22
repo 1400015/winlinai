@@ -274,7 +274,8 @@ class LinuxAIAssistant:
 
         def toggle_main_window(btn):
             # Ponto único do toggle: sincroniza o label da tray e o estado.
-            self.main_window.toggle_visibility()
+            if self.main_window is not None:
+                self.main_window.toggle_visibility()
 
         button = Gtk.Button(label="✦")
         button.connect("clicked", toggle_main_window)
@@ -352,8 +353,8 @@ def main(argv=None):
         from .global_shortcuts import DesktopActivation
         # Register before loading configuration or creating any window. A second
         # invocation only sends an activation request to the original process.
-        app_holder = []
-        pending_show = []
+        app_holder: list = []
+        pending_show: list = []
 
         def show_existing():
             if app_holder:

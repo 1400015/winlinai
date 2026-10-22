@@ -146,7 +146,7 @@ def render_findings(findings, lang="en"):
     if not findings:
         return ("Sem indício reconhecido nestas regras. Não confirma ausência de problemas." if lang == "pt" else
                 "No evidence recognized by these rules. This does not confirm the absence of problems.")
-    lines = []
+    lines: list = []
     for finding in findings:
         guide = PROCEDURE_BY_ID[finding["guide"]]
         lines.extend(("• " + finding["interpretation"], "  " + finding["evidence"],

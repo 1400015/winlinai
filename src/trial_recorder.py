@@ -648,7 +648,7 @@ class TrialRecorder:
                 raise ValueError('Finish the open case, or select an unfinished trial')
             if len(run['cases']) >= MAX_CASES or len(_json_bytes(run)) > MAX_RUN_BYTES - MAX_CASE_BYTES:
                 raise ValueError('Trial case limit reached; finish it and start another')
-            warnings = []
+            warnings: list = []
             baseline_events = self._audit(session_id, warnings)
             baseline_changes = self._journal(session_id, warnings)
             case = {'id': 'case-' + uuid.uuid4().hex, 'case_id': case_id,
@@ -834,7 +834,7 @@ class TrialRecorder:
         writer.writerow(('campanha_id', 'ambiente_id', 'execucao_id', 'build_sha', 'caso_id', 'variante',
                          'interface', 'modo', 'tipo_ensaio', 'tentativa', 'inicio_utc', 'fim_utc',
                          'resultado', 'resumo_observado', 'verificacao_independente', 'evidencia', 'issue', 'observador'))
-        attempts = {}
+        attempts: dict = {}
         for case in run['cases']:
             key = (case['case_id'], case['variant'], case['interface'])
             attempts[key] = attempts.get(key, 0) + 1

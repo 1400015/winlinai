@@ -91,7 +91,7 @@ def iter_bounded_lines(response, cancel_event=None, max_bytes=MAX_STREAM_BYTES,
 
 def iter_sse_json(response, cancel_event=None, max_frame_bytes=MAX_FRAME_BYTES,
                   max_events=MAX_STREAM_EVENTS, **line_limits):
-    fields = []
+    fields: list = []
     field_bytes = 0
     events = 0
 

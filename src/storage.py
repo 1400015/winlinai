@@ -202,7 +202,7 @@ def atomic_json_write(path, value, max_bytes=None):
                     except OSError as cleanup_error:
                         if write_error is None:
                             raise
-                        write_error.temporary_cleanup_error = cleanup_error
+                        setattr(write_error, 'temporary_cleanup_error', cleanup_error)
     except OSError as error:
         if published:
             raise JsonWriteCommittedError(value, error) from error

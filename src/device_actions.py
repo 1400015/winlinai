@@ -101,9 +101,11 @@ def scanner_support_packages(pkg_manager: str, needs_scanimage: bool = True) -> 
     """Fixed packages for discovery and AirScan; never rely on recommendations."""
     backend = support_package("scanner", pkg_manager)
     frontend = SCANIMAGE_PACKAGES.get(pkg_manager)
-    if backend is None or (needs_scanimage and frontend is None):
+    if backend is None:
         return ()
     if needs_scanimage:
+        if frontend is None:
+            return ()
         return frontend, backend
     return (backend,)
 
@@ -143,7 +145,7 @@ def parse_wifi_list(text: str) -> List[WifiNetwork]:
     Duplicate names keep the strongest signal. Empty and hidden names are
     dropped. The result is the only set of names the connect step may use.
     """
-    best = {}
+    best: dict = {}
     order: List[str] = []
     for line in (text or "").splitlines():
         fields = split_nmcli_fields(line.strip())

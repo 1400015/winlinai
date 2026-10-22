@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover - non-POSIX platforms
     class _FcntlFallback:
         LOCK_EX = 0
 
-    fcntl = _FcntlFallback()
+    fcntl = _FcntlFallback()  # type: ignore[assignment]
 
     def _noop_flock(fd, operation):
         return None

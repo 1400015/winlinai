@@ -100,7 +100,8 @@ def _read_source(value):
     if lines[-1] == '':
         lines.pop()
     chunks = []
-    start, pending, length = 1, [], 0
+    start, length = 1, 0
+    pending: list = []
     for number, line in enumerate(lines, 1):
         if len(line) > MAX_CHUNK_CHARS:
             raise DocumentError('A document line exceeds the 4096 character limit.')
@@ -339,7 +340,7 @@ class DocumentStore:
             count, average = self._database.execute('SELECT COUNT(*), AVG(terms) FROM chunks').fetchone()
             if not count:
                 return []
-            scores = {}
+            scores: dict = {}
             for word in words:
                 postings = self._database.execute('''
                     SELECT t.chunk_id, t.frequency, c.terms FROM terms t JOIN chunks c ON c.id = t.chunk_id WHERE t.term = ?''', (word,)).fetchall()

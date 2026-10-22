@@ -32,6 +32,7 @@ def start(parent, kind, commands, report, still_current):
     def work():
         if not still_current():
             return
+        items: list
         if kind == "wifi":
             items, error = collect_wifi()
         elif kind == "printer":

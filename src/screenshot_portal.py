@@ -351,9 +351,9 @@ def _copy_snapshot(uri, output_path, cancel_event, deadline):
                 os.unlink(temporary_name, dir_fd=output_parent)
             except OSError:
                 pass
-        for descriptor in (source_parent, output_parent):
-            if descriptor is not None:
-                os.close(descriptor)
+        for handle in (source_parent, output_parent):
+            if handle is not None:
+                os.close(handle)
 
 
 def capture_screenshot(output_path, cancel_event=None, timeout=120):

@@ -7,7 +7,7 @@ bridge is for a Windows host inspecting an explicitly selected distro;
 processes already running inside WSL use their native POSIX commands.
 """
 import re
-from typing import Callable, Dict, Iterable, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union
 
 _LIST_ARGV = ("wsl.exe", "--list", "--verbose")
 _DISTRIBUTION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -33,7 +33,7 @@ def _reject_path(path):
     return False
 
 
-def parse_wsl_list(output: str) -> Tuple[Dict[str, str], ...]:
+def parse_wsl_list(output: Union[str, bytes]) -> Tuple[Dict[str, str], ...]:
     """Parse ``wsl -l -v`` output into bounded distribution records.
 
     Accepts both the UTF-16 output produced by wsl.exe on Windows and plain
@@ -61,7 +61,7 @@ def parse_wsl_list(output: str) -> Tuple[Dict[str, str], ...]:
     return tuple(records)
 
 
-def detect_wsl_distros(run: Optional[Callable[..., "object"]] = None) -> Tuple[Dict[str, str], ...]:
+def detect_wsl_distros(run: Optional[Callable[..., Any]] = None) -> Tuple[Dict[str, str], ...]:
     """Enumerate installed WSL distributions.
 
     ``run`` defaults to :func:`subprocess.run`; tests inject a fake. Any
