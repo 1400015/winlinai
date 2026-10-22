@@ -1,6 +1,7 @@
 """Optional local trial recording, independent from AI and action execution."""
 
 import threading
+from typing import Any
 
 import gi
 
@@ -27,8 +28,8 @@ class TrialDialog(Gtk.Dialog):
     def __init__(self, window):
         super().__init__(title=_("Trials / Debug"), transient_for=window, modal=False)
         self.owner = window
-        self.recorder = getattr(window, 'trial_recorder', None)
-        self.run_data = None
+        self.recorder: Any = getattr(window, 'trial_recorder', None)
+        self.run_data: Any = None
         self.closed = False
         self.busy = False
         self._rendering = False
@@ -253,7 +254,11 @@ class TrialDialog(Gtk.Dialog):
         self._update_controls()
 
         def worker():
-            value, error, run, runs, preview = None, '', None, [], ''
+            value = None
+            error = ''
+            run = None
+            runs: list[Any] = []
+            preview = ''
             try:
                 value = operation()
             except Exception as exc:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import base64
@@ -150,7 +152,7 @@ def _encrypted_payload(value: str) -> Optional[bytes]:
 class ConfigManager:
     """Application configuration manager with optional encryption and theme support"""
 
-    DEFAULT_CONFIG = {
+    DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "app": {
             "name": "Linux AI Assistant",
             "version": _APP_VERSION,
@@ -273,7 +275,7 @@ class ConfigManager:
     }
 
     # Schema for validation (simplified)
-    CONFIG_SCHEMA = {
+    CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
         "app": {
             "width": int,
             "height": int,
@@ -330,7 +332,7 @@ class ConfigManager:
         }
     }
 
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: Optional[str] = None):
         """
         Initialize the configuration manager
 
@@ -343,6 +345,7 @@ class ConfigManager:
             config_dir = Path.home() / ".config" / "linux_ai_assistant"
             config_dir.mkdir(parents=True, exist_ok=True)
             config_path = str(config_dir / "config.json")
+        assert config_path is not None
 
         if _windows_host():
             from .platform.windows_files import ensure_owned_directory, ensure_private_directory
@@ -358,7 +361,7 @@ class ConfigManager:
         try:
             contents, identity = _read_owned_dotenv(self._dotenv_path)
             bindings = _dotenv_bindings(contents)
-            counts = {}
+            counts: dict[str, int] = {}
             for binding in bindings:
                 if binding.key is not None:
                     counts[binding.key] = counts.get(binding.key, 0) + 1
@@ -379,10 +382,10 @@ class ConfigManager:
             load_dotenv(self._dotenv_path, override=False)
         self._dotenv_empty_overrides = {name for name in candidates if os.environ.get(name) == ""}
         self.config_path = config_path
-        self.config = {}
-        self._encryption_key = None
-        self._credential_store = None
-        self._save_timer = None
+        self.config: dict[str, Any] = {}
+        self._encryption_key: Optional[bytes] = None
+        self._credential_store: Any = None
+        self._save_timer: Any = None
         self._dirty = False
         # Último erro persistente de escrita (None se a última gravação
         # teve sucesso). A UI usa-o para avisar quando alterações/keys não
@@ -659,7 +662,7 @@ class ConfigManager:
         e.g. `app.width` stays an int instead of silently becoming a string.
         """
         if default is None:
-            current = self.config
+            current: Any = self.config
             for part in key.split('.'):
                 if isinstance(current, dict) and part in current:
                     current = current[part]
@@ -877,7 +880,7 @@ class ConfigManager:
         with self._lock:
             if self._save_timer is not None:
                 self._save_timer.cancel()
-                self._save_timer = None
+            self._save_timer = None
             if self._dirty:
                 return self.save()
         return True
@@ -1082,7 +1085,7 @@ class ConfigManager:
                 if identity != self._dotenv_source_identity or len(target) != 1 or target[0].value != "":
                     raise ValueError("The empty override could not be removed safely.")
                 replacement = "".join(record.original.string if record.key != name else
-                                      re.match(r"\s*", record.original.string).group(0)
+                                      (m.group(0) if (m := re.match(r"\s*", record.original.string)) is not None else "")
                                       for record in records).encode("utf-8")
                 parent_descriptor = os.open(self._dotenv_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 parent_info = os.fstat(parent_descriptor)
@@ -1143,7 +1146,7 @@ class ConfigManager:
                     if identity != self._dotenv_source_identity or len(target) != 1 or target[0].value != "":
                         raise ValueError("The empty override could not be removed safely.")
                     replacement = "".join(record.original.string if record.key != name else
-                                          re.match(r"\s*", record.original.string).group(0)
+                                          (m.group(0) if (m := re.match(r"\s*", record.original.string)) is not None else "")
                                           for record in records).encode('utf-8')
                     descriptor, temporary = windows_files.private_temporary(self._dotenv_path.parent, '.env.tmp-')
                     with os.fdopen(descriptor, 'wb') as stream:

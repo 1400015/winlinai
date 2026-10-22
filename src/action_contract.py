@@ -1,6 +1,7 @@
 """Registered adapters, typed preparation and session-bound one-use authorization."""
 
 from dataclasses import asdict, dataclass, field
+from typing import Any
 import hashlib
 import json
 import secrets
@@ -45,7 +46,7 @@ class ActionResult:
     status: str
     text: str = ''
     data: object = None
-    change: object = None
+    change: Any = None
     verified: bool = False
     operation_id: str = ''
     trace: list = field(default_factory=list)

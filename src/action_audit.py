@@ -1,5 +1,6 @@
 """Private, bounded operation events. Outputs and human messages are not logged."""
 
+from collections.abc import Callable
 from contextvars import ContextVar
 import json
 import os
@@ -11,7 +12,7 @@ import time
 from .schema_validation import validate_schema
 from .storage import atomic_json_write, json_lock
 
-_sink = ContextVar('action_event_sink', default=None)
+_sink: ContextVar[Callable[[str, str], None] | None] = ContextVar('action_event_sink', default=None)
 MAX_EVENTS = 512
 MAX_BYTES = 4 * 1024 * 1024
 

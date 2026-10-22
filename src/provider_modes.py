@@ -5,6 +5,8 @@ environment proxy. A local server is still a trust boundary: the client can
 reject Ollama's advertised remote models, not audit arbitrary server code.
 """
 
+from __future__ import annotations
+
 import ipaddress
 import json
 import math
@@ -82,7 +84,7 @@ def is_cloud_model(name: str, metadata: Optional[Dict[str, Any]] = None) -> bool
                 or metadata.get("remote_model"))
 
 
-def validate_model_name(model: str, strict_local: bool = True) -> str:
+def validate_model_name(model: object, strict_local: bool = True) -> str:
     if not isinstance(model, str) or not model.strip() or len(model) > 256:
         raise LocalModelError("Choose a local model")
     model = model.strip()
@@ -155,7 +157,8 @@ def discover_local_models(base_url: str, backend: str = "ollama", strict_local: 
         raise LocalModelError("Unknown local model backend")
     if not isinstance(entries, list) or len(entries) > DISCOVERY_MAX_MODELS:
         raise LocalModelError("Invalid or oversized local model list")
-    names, rejected = [], []
+    names: list[str] = []
+    rejected: list[str] = []
     for entry in entries:
         if not isinstance(entry, dict):
             raise LocalModelError("Invalid local model entry")
@@ -198,5 +201,5 @@ def make_local_request(url: str, payload: Dict[str, Any], headers: Dict[str, str
         finally:
             session.close()
 
-    response.close = close
+    response.close = close  # type: ignore[method-assign]
     return response

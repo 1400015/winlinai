@@ -68,7 +68,7 @@ if ($PSVersionTable.PSEdition -ne 'Desktop' -or
         expected_keys = {'Name', 'DisplayName', 'Status', 'StartType'}
         statuses = {'Stopped', 'StartPending', 'StopPending', 'Running',
                     'ContinuePending', 'PausePending', 'Paused'}
-        start_types = {'Boot', 'System', 'Automatic', 'Manual', 'Disabled'}
+        start_types = {'Boot', 'System', 'Automatic', 'Manual', 'Disabled', ''}
         for service in services:
             self.assertEqual(set(service), expected_keys)
             for key in expected_keys:

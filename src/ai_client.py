@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import copy
 import time
@@ -10,7 +12,7 @@ from contextlib import contextmanager
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List, Callable, cast
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from .storage import JsonWriteCommittedError, update_json
 from .bounded_http import (
@@ -784,7 +786,7 @@ class AIClient:
             self._save_token_usage()
         logger.info("Token usage reset")
 
-    @retry(**NETWORK_RETRY)
+    @retry(**cast(Any, NETWORK_RETRY))
     def _make_request(self, url: str, payload: Dict, headers: Optional[Dict] = None,
                      timeout: Optional[int] = None, stream: bool = False,
                      cancel_event=None):
@@ -1071,7 +1073,7 @@ class AIClient:
         if stream:
             payload['stream'] = True
         options = self._get_api_config(selected)
-        headers = {'Authorization': 'Bearer ' + self._get_api_key(selected),
+        headers = {'Authorization': 'Bearer ' + (self._get_api_key(selected) or ""),
                    'HTTP-Referer': 'https://github.com/1400015/linux_ai', 'X-Title': 'Linux AI Assistant'}
         return payload, headers, options.get('timeout', self.DEFAULT_TIMEOUT)
 
@@ -1458,7 +1460,7 @@ class AIClient:
         can leave two `user` in a row (o pedido morria com 400).
         """
         system_parts = []
-        converted = []
+        converted: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -1894,7 +1896,8 @@ class AIClient:
             "Content-Type": "application/json"
         }
 
-        usage_events, received = [], []
+        usage_events: list[Any] = []
+        received: list[Any] = []
         try:
             response = self._make_request(url, payload, headers, timeout, stream=True)
             try:

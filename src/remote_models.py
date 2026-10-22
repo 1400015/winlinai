@@ -1,5 +1,7 @@
 """Explicit, bounded model discovery on the selected provider's API host."""
 
+from __future__ import annotations
+
 import json
 import math
 import multiprocessing
@@ -9,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import List
+from typing import Any, List
 from urllib.parse import urlsplit
 
 import requests
@@ -250,13 +252,13 @@ def _production_worker(command_fd, result_fd):
     _discovery_worker(None, result_fd, arguments)
 
 
-def _start_worker(read_fd, write_fd, arguments):
+def _start_worker(read_fd, write_fd, arguments) -> Any:
     provider, endpoint, headers, timeout, session_factory, clock = arguments
     if session_factory is not requests.Session or clock is not time.monotonic:
         # Explicit test/transport injection requires Linux fork. The normal
         # application path always execs a clean interpreter from its GUI thread.
         context = multiprocessing.get_context('fork')
-        worker = context.Process(target=_discovery_worker, args=(read_fd, write_fd, arguments),
+        worker: Any = context.Process(target=_discovery_worker, args=(read_fd, write_fd, arguments),
                                  name='linux-ai-model-discovery', daemon=True)
         worker.start()
         return worker, None, None
@@ -332,21 +334,24 @@ def discover_remote_models(provider, settings, key, *, timeout=8.0, session_fact
             raise ModelDiscoveryError('Model listing exceeded its deadline.')
 
     check()
-    read_fd, write_fd = os.pipe()
-    worker = None
-    command_fd = None
+    read_fd, write_fd_raw = os.pipe()
+    read_fd = read_fd
+    write_fd: int | None = write_fd_raw
+    worker: Any = None
+    command_fd: int | None = None
     try:
         os.set_blocking(read_fd, False)
         arguments = (provider, endpoint, headers, timeout, session_factory, clock)
         worker, command_fd, command = _start_worker(read_fd, write_fd, arguments)
-        os.close(write_fd)
+        if write_fd is not None:
+            os.close(write_fd)
         write_fd = None
         result = bytearray()
         while True:
             check()
             ready, writable, _ = select.select([read_fd], [command_fd] if command_fd is not None else [],
                                                [], min(_POLL_SECONDS, max(0, deadline - clock())))
-            if writable:
+            if writable and command_fd is not None:
                 count = os.write(command_fd, command[:4096])
                 command = command[count:]
                 if not command:

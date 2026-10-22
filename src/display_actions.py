@@ -10,6 +10,8 @@ https://github.com/swaywm/sway/blob/master/sway/sway-output.5.scd
 https://github.com/swaywm/sway/blob/master/sway/sway-ipc.7.scd
 """
 
+from __future__ import annotations
+
 import copy
 import json
 import math
@@ -21,7 +23,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from .action_audit import _sink, record_command
 from .process_output import CLEANUP_UNCERTAINTY, run_bounded
@@ -105,7 +107,7 @@ class _Snapshot:
 def _xrandr_snapshot(query, verbose):
     """Parse separate query and verbose replies; refuse an incomplete layout."""
     outputs = {}
-    mode_lines = {}
+    mode_lines: dict[str, list[list[str]]] = {}
     framebuffer = None
     output = None
     for line in query.splitlines():
@@ -132,7 +134,7 @@ def _xrandr_snapshot(query, verbose):
             raise ValueError("Unsupported RandR output record.")
         elif output and re.match(r"^\s+\S+\s+\d", line):
             fields = line.split()
-            rates = []
+            rates: list[str] = []
             for field in fields[1:]:
                 if field in {"*", "+", "*+", "i"} and rates:
                     rates[-1] += field
@@ -253,7 +255,9 @@ def _xrandr_snapshot(query, verbose):
         for fields in mode_lines[name]:
             for value in fields[1:]:
                 match = _RATE.fullmatch(value)
-                is_current = "*" in match[2]
+                if match is None:
+                    continue
+                is_current = "*" in match.group(2)
                 candidates = [item for item in native_modes if item["id"] not in used_modes
                               and item["name"] == fields[0] and item["refresh"] == float(match[1])
                               and item["current"] == is_current]
@@ -261,8 +265,8 @@ def _xrandr_snapshot(query, verbose):
                     raise ValueError("An advertised RandR mode changed during discovery.")
                 native = candidates[0]
                 used_modes.add(native["id"])
-                mode = DisplayMode(name, native["width"], native["height"], native["refresh"], native["id"],
-                                   state["scale"], is_current)
+                mode = DisplayMode(name, int(native["width"]), int(native["height"]), float(native["refresh"]), str(native["id"]),
+                                   float(cast(Any, state["scale"])), is_current)
                 modes.append(mode)
                 if mode.current:
                     if state["mode"] is not None:
@@ -270,7 +274,7 @@ def _xrandr_snapshot(query, verbose):
                     state["mode"] = mode
         if state["active"] and state["mode"] is None:
             raise ValueError("The current RandR mode could not be read.")
-        if state["active"] and current_native_ids != [state["mode"].identifier]:
+        if state["active"] and state["mode"] is not None and current_native_ids != [cast(Any, state["mode"]).identifier]:
             raise ValueError("The active RandR mode changed during discovery.")
         state["raw"] = tuple(lines)
     return _Snapshot("xrandr", outputs, modes, framebuffer)
@@ -307,15 +311,16 @@ def _sway_snapshot(reply):
             raise ValueError("Invalid Sway display modes.")
         current = raw.get("current_mode")
         for value in advertised:
-            if not isinstance(value, dict) or type(value.get("refresh")) is not int:
+            if (not isinstance(value, dict) or type(value.get("width")) is not int
+                    or type(value.get("height")) is not int or type(value.get("refresh")) is not int):
                 raise ValueError("Invalid Sway mode record.")
-            width, height, refresh = value.get("width"), value.get("height"), value["refresh"] / 1000
+            width, height, refresh = int(cast(Any, value.get("width"))), int(cast(Any, value.get("height"))), cast(Any, value["refresh"]) / 1000
             identifier = "{}x{}@{}Hz".format(width, height, _fmt(refresh))
             matches_current = isinstance(current, dict) and all(
                 value.get(key) == current.get(key) for key in ("width", "height", "refresh")
             )
-            mode = DisplayMode(name, width, height, refresh, identifier, state["scale"],
-                               active and matches_current)
+            mode = DisplayMode(name, int(width), int(height), float(refresh), str(identifier), float(state["scale"]),
+                               bool(active and matches_current))
             modes.append(mode)
             if mode.current:
                 if state["mode"] is not None:
@@ -387,7 +392,7 @@ class DisplayService:
         self._timer_factory = timer_factory or threading.Timer
         self._clock = clock or time.monotonic
         self._lock = threading.RLock()
-        self._pending = None
+        self._pending: Any = None
         self._closed = False
         self._failed_recovery = ""
         self._independent_watchdog = bool(independent_watchdog)
@@ -648,7 +653,7 @@ class DisplayService:
         finally:
             _sink.reset(token)
 
-    def _finish_impl(self, change, keep):
+    def _finish_impl(self, change: Any, keep: bool):
         with self._lock:
             if change.status != "pending":
                 return (change.status == ("kept" if keep else "reverted")), change._message

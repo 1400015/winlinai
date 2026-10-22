@@ -71,7 +71,8 @@ def load_module(source):
 
 def validate_modules(modules):
     by_id = {}
-    procedures, families = set(), set()
+    procedures: set[str] = set()
+    families: set[str] = set()
     for module in modules:
         if module['id'] in by_id:
             raise SchemaError('Duplicate knowledge module')

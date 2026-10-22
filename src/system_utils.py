@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import json
 import getpass
@@ -26,7 +28,10 @@ def _windows_is_admin():
     """Observe Windows elevation without requesting it or assuming Unix APIs."""
     import ctypes
     try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return False
+        return bool(windll.shell32.IsUserAnAdmin())
     except (AttributeError, OSError):
         return False
 
@@ -529,7 +534,9 @@ class SystemUtils:
             rect = focused.get("rect") or {}
             x, y = rect.get("x"), rect.get("y")
             w, h = rect.get("width"), rect.get("height")
-            if None in (x, y, w, h) or w <= 0 or h <= 0:
+            if not (isinstance(x, int) and isinstance(y, int) and isinstance(w, int) and isinstance(h, int)):
+                return None
+            if w <= 0 or h <= 0:
                 return None
             return capture_geometry(f"{int(x)},{int(y)} {int(w)}x{int(h)}")
         except Exception as e:
@@ -720,7 +727,7 @@ class SystemUtils:
 
     def get_active_window_info(self) -> Dict[str, str]:
         """Get information about the active window."""
-        info = {}
+        info: dict[str, Any] = {}
 
         try:
             if self.is_wayland:
@@ -877,7 +884,7 @@ class SystemUtils:
 
     def get_network_info(self) -> Dict[str, Any]:
         """Get network information."""
-        info = {}
+        info: dict[str, Any] = {}
 
         try:
             import psutil
@@ -934,7 +941,7 @@ class SystemUtils:
             List of file paths.
         """
 
-        results = []
+        results: list[str] = []
 
         if not search_term or not isinstance(search_term, str):
             return results
@@ -975,7 +982,7 @@ class SystemUtils:
 
     def get_file_info(self, filepath: str) -> Dict[str, str]:
         """Get information about a file."""
-        info = {}
+        info: dict[str, Any] = {}
 
         if not filepath or not isinstance(filepath, str):
             return {"error": "Invalid path"}

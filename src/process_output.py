@@ -19,6 +19,7 @@ import selectors
 import signal
 import subprocess
 import sys
+from typing import Any
 import threading
 import time
 
@@ -224,7 +225,8 @@ def run_bounded(argv, timeout, limit, env=None):
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(argv, timeout)
             for key, _ in selector.select(remaining):
-                chunk = os.read(key.fileobj.fileno(), min(65536, limit - total + 1))
+                file_descriptor = key.fileobj if isinstance(key.fileobj, int) else key.fileobj.fileno()
+                chunk = os.read(file_descriptor, min(65536, limit - total + 1))
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
@@ -252,15 +254,18 @@ def run_bounded(argv, timeout, limit, env=None):
         try:
             cleanup_warning = _cleanup_process(process)
             if failure is not None and cleanup_warning:
-                failure.cleanup_uncertainty = cleanup_warning
+                failure_any: Any = failure
+                setattr(failure_any, "cleanup_uncertainty", cleanup_warning)
                 if isinstance(failure, subprocess.TimeoutExpired):
-                    failure.stderr = output['stderr'].decode('utf-8', errors='replace')
-                    failure.stderr += '\n' + cleanup_warning
+                    failure_any.stderr = output['stderr'].decode('utf-8', errors='replace')
+                    failure_any.stderr += '\n' + cleanup_warning
         finally:
             if selector is not None:
                 selector.close()
-            process.stdout.close()
-            process.stderr.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
     decoded = {name: data.decode('utf-8', errors='replace') for name, data in output.items()}
     if truncated:
         decoded['stdout'] += '\n... (output truncated at {} bytes)'.format(limit)

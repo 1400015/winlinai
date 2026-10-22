@@ -4,7 +4,18 @@ Invoked by pkexec with Python -I. No arbitrary paths, shell, recursive removal,
 configuration text or scripts are accepted. This does not control service processes.
 """
 
-import fcntl
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    class _FcntlFallback:
+        LOCK_EX = 0
+
+    fcntl = _FcntlFallback()
+
+    def _noop_flock(fd, operation):
+        return None
+
+    fcntl.flock = _noop_flock
 import hashlib
 import json
 import os

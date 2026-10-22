@@ -47,7 +47,7 @@ def _open_validated_store(path):
     return store
 
 
-class HistoryRecoveryDialog(Gtk.Dialog if Gtk is not None else object):
+class HistoryRecoveryDialog(Gtk.Dialog if Gtk is not None else object):  # type: ignore[misc]
     """Run the confirmation on GTK and the complete backup transaction outside it."""
 
     def __init__(self, parent=None, path=None, store=None, error=None, validate=False):
@@ -157,7 +157,7 @@ class HistoryRecoveryDialog(Gtk.Dialog if Gtk is not None else object):
                 # A post-backup failure must keep its durable original visible,
                 # including a failure opening the freshly reset history.
                 if backup is not None and not getattr(error, "recovery_backup", None):
-                    error.recovery_backup = backup
+                    setattr(error, "recovery_backup", backup)
                 raise
 
         self._start(operation, self._recovery_finished)

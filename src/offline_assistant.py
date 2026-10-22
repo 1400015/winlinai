@@ -9,6 +9,8 @@ commands (as argv lists, so there is no shell interpolation) and the UI runs
 them through ``pkexec`` after an explicit confirmation.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import shlex
@@ -512,7 +514,7 @@ class OfflineAssistant:
         # a ter factos e apontadores válidos.
         self._kb = (knowledge_for(self._distro.distro_id, self._distro.id_like)
                     or knowledge_for("unknown"))
-        self._diagnostic = None
+        self._diagnostic: Any = None
         # Probes follow the running platform: PowerShell on Windows host,
         # POSIX probes wrapped through the WSL bridge inside a distro.
         from .platform import WINDOWS, detect_platform, wsl_distro_name
@@ -570,7 +572,7 @@ class OfflineAssistant:
         if self._platform == "windows":
             from .platform.shell_pwsh import FORBIDDEN_TOKENS
         else:
-            FORBIDDEN_TOKENS = ()
+            FORBIDDEN_TOKENS: tuple[str, ...] = ()  # type: ignore[no-redef]
         text = (message or "").strip()
         low = " " + text.lower() + " "
         distro = self._distro
@@ -728,7 +730,7 @@ class OfflineAssistant:
         template = self._distro.pkg.get("install")
         if not template or not packages or not all(_valid(package) for package in packages):
             return None
-        argv = []
+        argv: list[str] = []
         for part in template:
             if part == "{pkg}":
                 argv.extend(packages)
@@ -902,7 +904,7 @@ class OfflineAssistant:
 
     # -- internals ---------------------------------------------------------
 
-    def _run(self, command: str) -> Optional[str]:
+    def _run(self, command: Any) -> Optional[str]:
         """Run a safe diagnostic via the sandboxed SystemUtils, if available."""
         if self.system_utils is None:
             return None
@@ -1144,7 +1146,7 @@ class OfflineAssistant:
                         "Não foi possível obter o estado do serviço: " + str(error)
                         if lang == "pt" else
                         "Could not read the service status: " + str(error))
-                return Reply(format_services_table([service]))
+                return Reply(format_services_table([service if service is not None else {}]))
             return Reply("O nome do serviço não é aceite."
                          if lang == "pt" else "The service name is not accepted.")
 
@@ -1211,7 +1213,7 @@ class OfflineAssistant:
                 # Legacy language templates remain reference material only.
                 return Reply('Usa «{} serviço {}» para consultar e confirmar o alvo.'.format(action, name)
                              if lang == 'pt' else 'Use "{} service {}" to inspect and confirm the target.'.format(action, name))
-            remainder = text[match.end():].strip().rstrip(".!?")
+            remainder = text[match.end():].strip().rstrip(".!?") if match is not None else ""
             if remainder and remainder.lower() not in {"please", "por favor"}:
                 return Reply(_t(lang, "ambiguous_action"))
             argv = _fill(svc[action], svc=name)

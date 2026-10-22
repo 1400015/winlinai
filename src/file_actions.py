@@ -24,8 +24,8 @@ try:
     from .render_core import FileBlock
     from .i18n import _
 except ImportError:
-    from render_core import FileBlock
-    from i18n import _
+    from render_core import FileBlock  # type: ignore[import-not-found, no-redef]
+    from i18n import _  # type: ignore[import-not-found, no-redef]
 
 try:
     import gi

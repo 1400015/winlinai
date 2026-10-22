@@ -5,12 +5,15 @@ Queued messages retain the session in which they were submitted. All writers and
 session operations use the same locked, atomic JSON transaction.
 """
 
+from __future__ import annotations
+
 import atexit
 import json
 import logging
 import math
 import os
 from pathlib import Path
+from typing import Any, Optional
 import queue
 import shutil
 import stat
@@ -184,10 +187,10 @@ class HistoryStore:
         if not isinstance(max_messages, int) or max_messages < 1:
             raise ValueError("max_messages must be positive")
         self.max_messages = max_messages
-        self._queue = queue.SimpleQueue()
+        self._queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
         self._closed = False
         self._state_lock = threading.Lock()
-        self.last_error = None
+        self.last_error: Optional[Exception] = None
         loaded = self._read()
         self._session_id = loaded.get("active_session_id", LEGACY_SESSION_ID) if isinstance(loaded, dict) else LEGACY_SESSION_ID
         self._generation = loaded.get("recovery_generation") if isinstance(loaded, dict) else None
@@ -288,7 +291,7 @@ class HistoryStore:
         except BaseException as error:
             if backup is not None:
                 if complete:
-                    error.recovery_backup = backup
+                    setattr(error, "recovery_backup", backup)
                 else:
                     try:
                         backup.unlink()
@@ -302,7 +305,7 @@ class HistoryStore:
         self._read()
         if not self.flush():
             error = OSError("History was backed up and reset, but pending messages could not be saved")
-            error.recovery_backup = backup
+            setattr(error, "recovery_backup", backup)
             raise error from self.last_error
         return backup
 
@@ -322,7 +325,7 @@ class HistoryStore:
         """Normalized provider context: no timestamps or other conversations."""
         return [{"role": entry["role"], "content": entry["content"]} for entry in self.load_entries(session_id)]
 
-    def append(self, role: str, content: str, timestamp: float = None, session_id=None):
+    def append(self, role: str, content: str, timestamp: Optional[float] = None, session_id=None):
         if role not in ("user", "assistant") or not isinstance(content, str) or not content:
             raise ValueError("Invalid conversation message")
         if len(content) > MAX_MESSAGE_CHARS:
@@ -674,7 +677,7 @@ class HistoryStore:
             if isinstance(loaded, list) and targets <= {LEGACY_SESSION_ID}:
                 return merge_messages(loaded, incoming)
             document = _document(loaded)
-            groups = {}
+            groups: dict[str, Any] = {}
             for target in targets:
                 messages = [item for item in incoming if isinstance(item, dict)
                             and (session_id or item.get("session_id", LEGACY_SESSION_ID)) == target]

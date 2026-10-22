@@ -6,8 +6,11 @@ Only a fixed number of daemon readers can exist, even if a broken transport
 never returns after cancellation.
 """
 
+from __future__ import annotations
+
 import math
 import queue
+from typing import Any
 import socket
 import threading
 import time
@@ -116,7 +119,7 @@ def bounded_request(call, max_seconds, cancel_event=None):
     abandoned = threading.Event()
     handoff = threading.Lock()
     finished = threading.Event()
-    mailbox = queue.Queue(maxsize=1)
+    mailbox: queue.Queue[Any] = queue.Queue(maxsize=1)
 
     def check():
         if cancel_event is not None and cancel_event.is_set():
@@ -155,7 +158,7 @@ def bounded_request(call, max_seconds, cancel_event=None):
                 if close_late_response:
                     abandoned.set()
             try:
-                if close_late_response:
+                if close_late_response and response is not None:
                     response.close()
             except Exception:
                 pass
@@ -323,7 +326,7 @@ def iter_chunks(response, max_bytes, max_seconds, cancel_event=None, chunk_size=
     except Exception:
         slots.release()
         raise HTTPReadError("HTTP response does not support bounded reading.") from None
-    mailbox = queue.Queue(maxsize=1)
+    mailbox: queue.Queue[Any] = queue.Queue(maxsize=1)
 
     def send(item):
         while not state.stop.is_set():

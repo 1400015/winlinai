@@ -18,7 +18,7 @@ import getpass
 import logging
 import select
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Any, Optional, Dict
 
 from .config_manager import ConfigManager
 from .ai_client import AIClient, AIProviderError, AIImageRequestError, AIRequestCancelled, AIResponseLimitError
@@ -914,7 +914,7 @@ Examples:
         if image_path is not None and not getattr(args, 'message', None) and not getattr(args, 'stdin', False) and not getattr(args, 'input', None):
             args.message = [_("Describe this image.")]
         message = self._message_from_args(args)
-        images = ()
+        images: tuple[Any, ...] = ()
         document_context = ''
         try:
             if image_path is not None:
@@ -1414,7 +1414,7 @@ def main():
     except Exception as e:
         print(f"\n✗ Error: {e}")
         if getattr(e, 'recovery_backup', None) is not None:
-            print('Original history preserved at: {}'.format(e.recovery_backup))
+            print('Original history preserved at: {}'.format(getattr(e, "recovery_backup", None)))
         sys.exit(1)
     finally:
         if app is not None and getattr(app, 'actions', None) is not None:

@@ -92,7 +92,7 @@ MEMORY = "https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html"
 SYSTEMD = "https://www.freedesktop.org/software/systemd/man/latest/systemctl.html"
 
 
-PROCEDURES = (
+PROCEDURES: tuple["Procedure", ...] = (
     Procedure("network-interface", ("Rede sem ligação", "Network link unavailable"),
         ("Começa pela interface local antes de testar destinos externos.", "Check the local interface before testing external destinations."),
         ("rede", "network", "internet", "interface", "sem ligacao", "no connection"), (
@@ -246,9 +246,9 @@ def render_procedure(procedure: Procedure, lang: str = "en", distro=None) -> str
     if procedure.component:
         lines.append(("Componente necessário: " if pt else "Required component: ") + procedure.component)
     lines.append(localized(procedure.version_scope, lang))
-    if distro is not None and getattr(distro, "version_id", ""):
+    if distro is not None and getattr(distro, "version_id", None):
         lines.append(("Versão identificada: " if pt else "Identified release: ") + distro.version_id)
-    if distro is not None and not getattr(distro, "version_id", ""):
+    if distro is not None and not getattr(distro, "version_id", None):
         lines.append("Versão da distribuição desconhecida; confirma a aplicabilidade antes de alterar." if pt else "Distribution version is unknown; confirm applicability before making changes.")
     lines.append(("Revisão das fontes: " if pt else "Sources reviewed: ") + procedure.reviewed_at +
                  ("; sem validação nesta máquina." if pt else "; not validated on this machine."))

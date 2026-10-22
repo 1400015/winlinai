@@ -98,6 +98,23 @@ files = [
     "src/build_info.py",
     "src/system_context.py",
     "src/credential_store.py",
+    "src/action_audit.py",
+    "src/action_contract.py",
+    "src/bounded_http.py",
+    "src/provider_modes.py",
+    "src/file_actions.py",
+    "src/remote_models.py",
+    "src/history_store.py",
+    "src/local_knowledge.py",
+    "src/system_utils.py",
+    "src/knowledge_loader.py",
+    "src/process_output.py",
+    "src/config_manager.py",
+    "src/display_actions.py",
+    "src/offline_assistant.py",
+    "src/trial_dialog.py",
+    "src/cli.py",
+    "src/history_recovery.py",
     # Theme utilities (refactored from main_window.py)
     "src/theme_utils.py",
     "src/main_window_themes.py",
@@ -135,5 +152,5 @@ show_error_codes = true
 
 # Ignore missing imports for optional/platform-specific dependencies
 [[tool.mypy.overrides]]
-module = ["winreg", "gi.*", "PIL.*"]
+module = ["winreg", "gi.*", "PIL.*", "psutil", "pytesseract", "yaml"]
 ignore_missing_imports = true
