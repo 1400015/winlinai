@@ -59,6 +59,33 @@ jobs:
         run: |
           xvfb-run -a .venv-gtk/bin/python scripts/run_gtk_tests.py
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-gi gir1.2-gtk-3.0 python3-venv xvfb libxtst6 dbus-daemon desktop-file-utils librsvg2-common
+          /usr/bin/python3 -m venv --system-site-packages .venv-coverage
+          .venv-coverage/bin/python -m pip install -r requirements.txt
+          .venv-coverage/bin/python -m pip install ".[dev,encryption]" build "setuptools>=61" wheel
+      - name: Measure the coverage of the platform independent core
+        # The Linux job measures the core and the GTK track. The Qt shell and
+        # the native Windows modules are verified by their own jobs, so the
+        # floor only covers the modules this runner can execute.
+        run: |
+          xvfb-run -a .venv-coverage/bin/python -m coverage run scripts/run_gtk_tests.py
+          .venv-coverage/bin/python -m coverage json -o coverage.json
+          .venv-coverage/bin/python scripts/check_coverage.py
+      - name: Publish the coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.json
+          if-no-files-found: error
+        if: always()
+
   qt-linux:
     runs-on: ubuntu-latest
     env:

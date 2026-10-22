@@ -38,6 +38,7 @@ qt = ["PySide6>=6.6"]
 dev = [
     "ruff>=0.5",
     "mypy==2.4.0; python_version >= '3.10'",
+    "coverage>=7.4",
 ]
 
 [project.urls]
@@ -154,3 +155,29 @@ show_error_codes = true
 [[tool.mypy.overrides]]
 module = ["winreg", "gi.*", "PIL.*", "psutil", "pytesseract", "yaml"]
 ignore_missing_imports = true
+
+# Coverage measurement for the platform-independent core.
+# The Linux job measures the core and the GTK track; the Qt and native
+# Windows modules are verified by their own jobs, so the floor is enforced
+# only over the modules that this job can execute.
+[tool.coverage.run]
+branch = true
+source = ["src"]
+parallel = false
+
+[tool.coverage.report]
+show_missing = true
+precision = 1
+skip_empty = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@abstractmethod",
+]
+# Floor for the platform-independent core. It is enforced by
+# scripts/check_coverage.py and must never be lowered to make a change pass.
+# The value is calibrated from the first measured CI run.
+[tool.coverage.core_floor]
+percent = 0.0
+

@@ -14,3 +14,9 @@ installer/vcredist_x64.exe
 .vscode/
 .idea/
 *.log
+
+# Coverage artifacts
+.coverage
+coverage.json
+htmlcov/
+
