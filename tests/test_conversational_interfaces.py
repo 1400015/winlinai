@@ -98,10 +98,10 @@ class TestConversationalGTK(unittest.TestCase):
             from gi.repository import Gtk
             if not Gtk.init_check()[0]:
                 raise unittest.SkipTest('GTK display unavailable')
-            from src import main_window
+            from src import main_window, main_window_dialogs
         except (ImportError, ValueError) as error:
             raise unittest.SkipTest('GTK3 unavailable: ' + str(error))
-        cls.module, cls.Gtk = main_window, Gtk
+        cls.module, cls.reports, cls.Gtk = main_window, main_window_dialogs, Gtk
 
     def window(self):
         return SimpleNamespace(
@@ -197,8 +197,8 @@ class TestConversationalGTK(unittest.TestCase):
             dialogs.append(dialog)
             return self.Gtk.ResponseType.CLOSE
         try:
-            with patch.object(self.module.threading, 'Thread', side_effect=lambda target, daemon: SimpleNamespace(start=lambda: pending.append(target))), \
-                    patch.object(self.module.GLib, 'idle_add', side_effect=lambda callback, *args: queued.append((callback, args))), \
+            with patch.object(self.reports.threading, 'Thread', side_effect=lambda target, daemon: SimpleNamespace(start=lambda: pending.append(target))), \
+                    patch.object(self.reports.GLib, 'idle_add', side_effect=lambda callback, *args: queued.append((callback, args))), \
                     patch.object(self.Gtk.Dialog, 'run', run), patch.object(self.Gtk.Dialog, 'destroy'):
                 self.module.MainWindow._show_action_audit(window)
                 window.history_store.active_session_id = 'other'
@@ -223,8 +223,8 @@ class TestConversationalGTK(unittest.TestCase):
         window = SimpleNamespace(_audit_closed=True,
             history_store=SimpleNamespace(active_session_id='owner'),
             actions=SimpleNamespace(audit=SimpleNamespace(events=Mock(return_value=[]))))
-        with patch.object(self.module.threading, 'Thread', side_effect=lambda target, daemon: SimpleNamespace(start=target)), \
-                patch.object(self.module.GLib, 'idle_add', side_effect=lambda callback, *args: callback(*args)) as idle:
+        with patch.object(self.reports.threading, 'Thread', side_effect=lambda target, daemon: SimpleNamespace(start=target)), \
+                patch.object(self.reports.GLib, 'idle_add', side_effect=lambda callback, *args: callback(*args)) as idle:
             self.module.MainWindow._show_action_audit(window)
         self.assertEqual(idle.call_count, 1)
         self.assertIs(idle.call_args.args[0]([], ''), False)

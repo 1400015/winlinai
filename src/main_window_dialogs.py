@@ -1,30 +1,28 @@
-"""Dialog methods extracted from MainWindow.
+"""GTK report and confirmation dialogs extracted from MainWindow.
 
-These methods handle the settings, statistics and history dialogs.
-Extracted from main_window.py to reduce its size.
+The dialogs still read window state through the window passed in; keeping
+them here stops MainWindow from growing with presentation-only code.
 """
-from __future__ import annotations
 
-import logging
-from typing import TYPE_CHECKING
+import threading
 
-if TYPE_CHECKING:
-    from .main_window import MainWindow
+import gi
 
-logger = logging.getLogger(__name__)
+gi.require_version('Gtk', '3.0')
+
+from gi.repository import GLib, Gtk
+
+from .i18n import _
+
+__all__ = [
+    "confirm_display_change",
+    "show_action_audit",
+    "show_stats_dialog",
+]
 
 
-def show_stats_dialog(window: "MainWindow"):
-    """Show usage statistics dialog.
-
-    Args:
-        window: The MainWindow instance
-    """
-    import gi
-    gi.require_version('Gtk', '3.0')
-    from gi.repository import Gtk
-    from .i18n import _
-
+def show_stats_dialog(window):
+    """Show statistics dialog"""
     dialog = Gtk.Dialog(
         title=_("Statistics - Linux AI Assistant"),
         parent=window,
@@ -80,17 +78,80 @@ def show_stats_dialog(window: "MainWindow"):
     dialog.destroy()
 
 
-def show_config_dialog(window: "MainWindow"):
-    """Show settings dialog.
+def show_action_audit(window):
+    session_id = window.history_store.active_session_id
 
-    This is a large dialog with multiple tabs (API, Appearance, Themes, Features).
-    For now, this delegates to the original implementation in main_window.py.
+    def show(events, error):
+        if getattr(window, '_audit_closed', False):
+            return False
+        dialog = Gtk.Dialog(title=_("Actions"), transient_for=window, modal=True)
+        dialog.add_button(_("Close"), Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(720, 400)
+        tree = Gtk.TreeStore(str, str, str, str)
+        parents = {}
+        for event in events:
+            identifier = event['operation_id']
+            if identifier not in parents:
+                parents[identifier] = tree.append(None, [event['action_id'], event['resource'], event['phase'], identifier])
+            tree.set_value(parents[identifier], 2, event['phase'])
+            tree.append(parents[identifier], [event['phase'], event['detail'], '', ''])
+        view = Gtk.TreeView(model=tree)
+        for column, title in enumerate((_("Actions"), _("Details"), _("Status"), 'ID')):
+            view.append_column(Gtk.TreeViewColumn(title, Gtk.CellRendererText(), text=column))
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled.add(view)
+        dialog.get_content_area().pack_start(scrolled, True, True, 0)
+        if error or not events:
+            dialog.get_content_area().pack_start(Gtk.Label(label=error or _("No actions recorded.")), False, False, 8)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+        return False
 
-    Args:
-        window: The MainWindow instance
-    """
-    # The original _show_config_dialog is very large (~300 lines).
-    # For this refactoring phase, we keep it in main_window.py and
-    # only extract the smaller dialogs.
-    # TODO: Extract the full config dialog in a future refactoring.
-    return window._show_config_dialog_original()
+    def load():
+        try:
+            events, error = window.actions.audit.events(session_id), ''
+        except (OSError, ValueError):
+            events, error = [], _("Cannot read the operation audit.")
+        GLib.idle_add(show, events, error)
+    threading.Thread(target=load, daemon=True).start()
+
+
+def confirm_display_change(window, change, request_id, cancel_event, session_id):
+    dialog = Gtk.Dialog(title=_("Keep display configuration?"), transient_for=window, modal=True)
+    dialog.add_button(_("Revert"), Gtk.ResponseType.CANCEL)
+    dialog.add_button(_("Keep"), Gtk.ResponseType.OK)
+    dialog.set_default_response(Gtk.ResponseType.CANCEL)
+    label = Gtk.Label()
+    label.set_margin_top(16)
+    label.set_margin_bottom(16)
+    label.set_margin_start(16)
+    label.set_margin_end(16)
+    dialog.get_content_area().add(label)
+    timer_active = [True]
+
+    def tick():
+        if (change.status != 'pending' or request_id != window._active_request
+                or cancel_event.is_set() or change.remaining_seconds <= 0):
+            timer_active[0] = False
+            dialog.response(Gtk.ResponseType.CANCEL)
+            return False
+        label.set_text(_("Reverting in {seconds} seconds unless you keep this configuration.").format(
+            seconds=max(1, int(change.remaining_seconds + 0.999)),
+        ))
+        return True
+
+    if tick():
+        timer = GLib.timeout_add(200, tick)
+        dialog.show_all()
+        response = dialog.run()
+        if timer_active[0]:
+            GLib.source_remove(timer)
+    else:
+        response = Gtk.ResponseType.CANCEL
+    dialog.destroy()
+    keep = (response == Gtk.ResponseType.OK and request_id == window._active_request
+            and not cancel_event.is_set())
+    window._finish_display_change(change, keep, request_id, session_id)
+
