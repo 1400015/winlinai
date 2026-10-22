@@ -19,7 +19,7 @@ Os extras opcionais são instalados conforme a funcionalidade a validar. Os test
 
 ## Análise de tipos gradual
 
-O workflow `typecheck.yml` usa Python 3.12 e `mypy==2.4.0`, fixado no extra de desenvolvimento. A configuração em `pyproject.toml` verifica 78 módulos no alvo Linux e 65 no alvo win32. O conjunto cobre o núcleo sem GTK, o cliente de API e os módulos de providers, o trilho Qt, a fundação Windows e o núcleo do assistente (ações, documentos, armazenamento, diagnósticos e diálogos).
+O workflow `typecheck.yml` usa Python 3.12 e `mypy==2.4.0`, fixado no extra de desenvolvimento. A configuração em `pyproject.toml` verifica 79 módulos no alvo Linux e 66 no alvo win32. O conjunto cobre o núcleo sem GTK, o cliente de API e os módulos de providers, o trilho Qt, a fundação Windows e o núcleo do assistente (ações, documentos, armazenamento, diagnósticos e diálogos).
 
 Os módulos que usam APIs exclusivas de uma plataforma são classificados em `[tool.typecheck]`: `posix_files` só é analisado no alvo Linux (`os.O_NOFOLLOW`, `os.getuid`, `fcntl`), e `windows_files` só no alvo win32 (`win32api`, `win32file`). `scripts/typecheck.py` reúne a lista comum com a lista da plataforma pedida; `pyproject.toml` mantém a lista comum em `[tool.mypy].files`.
 
