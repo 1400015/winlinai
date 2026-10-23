@@ -165,6 +165,10 @@ files = [
     "src/main_window_theme_dialogs.py",
     "src/main_window_dialogs.py",
     "src/main_window_capture.py",
+    "src/main_window_ui.py",
+    "src/main_window_offline.py",
+    "src/main_window_chat_flow.py",
+    "src/main_window_bootstrap.py",
     "src/app.py",
     "src/qt_file_dialogs.py",
     # WSL bridge: parses wsl.exe output and builds validated probe argv.

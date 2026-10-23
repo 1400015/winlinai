@@ -98,10 +98,11 @@ class TestConversationalGTK(unittest.TestCase):
             from gi.repository import Gtk
             if not Gtk.init_check()[0]:
                 raise unittest.SkipTest('GTK display unavailable')
-            from src import main_window, main_window_dialogs
+            from src import main_window, main_window_chat_flow, main_window_dialogs
         except (ImportError, ValueError) as error:
             raise unittest.SkipTest('GTK3 unavailable: ' + str(error))
-        cls.module, cls.reports, cls.Gtk = main_window, main_window_dialogs, Gtk
+        cls.module, cls.chat_flow, cls.reports, cls.Gtk = (
+            main_window, main_window_chat_flow, main_window_dialogs, Gtk)
 
     def window(self):
         return SimpleNamespace(
@@ -118,7 +119,7 @@ class TestConversationalGTK(unittest.TestCase):
         reply = ActionReply('Repository description includes ```file:/etc/example```')
         window.actions.handle.return_value = reply
         queued = []
-        with patch.object(self.module.GLib, 'idle_add', side_effect=lambda *args: queued.append(args)):
+        with patch.object(self.chat_flow.GLib, 'idle_add', side_effect=lambda *args: queued.append(args)):
             self.module.MainWindow._process_message(window, 'install nano', [], 3,
                                                    window._cancel_event, session_id='owning-session')
         window.ai_client.provider_ready.assert_not_called()
@@ -131,7 +132,7 @@ class TestConversationalGTK(unittest.TestCase):
     def test_local_completion_records_once_without_model_file_actions(self):
         window = self.window()
         reply = ActionReply('Available modes', 'needs_choice')
-        with patch.object(self.module.file_actions, 'offer_file_blocks_async') as files:
+        with patch.object(self.chat_flow.file_actions, 'offer_file_blocks_async') as files:
             self.module.MainWindow._complete_action_reply(window, 3, window._cancel_event, reply, 'owning-session')
         window._remember.assert_called_once_with('assistant', reply.text)
         window._add_ai_message.assert_called_once_with(reply.text, False)

@@ -405,8 +405,8 @@ class TestProductGtk(ProductFixtures):
             def start(self):
                 workers.append((self.target, self.args))
 
-        with patch('src.main_window.threading.Thread', DeferredWorker), \
-                patch('src.main_window.GLib.idle_add', side_effect=lambda callback, *args: callbacks.append((callback, args))):
+        with patch('src.main_window_chat_flow.threading.Thread', DeferredWorker), \
+                patch('src.main_window_chat_flow.GLib.idle_add', side_effect=lambda callback, *args: callbacks.append((callback, args))):
             self.window.on_send_clicked()
             while workers:
                 callback, args = workers.popleft()
@@ -426,7 +426,7 @@ class TestProductGtk(ProductFixtures):
         self.window.input_entry.set_text('network')
         self.window.documents_check.set_active(True)
         before = self.history.path.read_bytes()
-        with patch('src.main_window.review_document_context', return_value=False) as review:
+        with patch('src.main_window_chat_flow.review_document_context', return_value=False) as review:
             self.send()
         self.assertEqual(review.call_args.args[1], self.documents.context('network'))
         self.assertEqual(self.window.input_entry.get_text(), 'network')
@@ -445,7 +445,7 @@ class TestProductGtk(ProductFixtures):
         with patch('src.main_window.review_image', return_value=True):
             self.window._review_and_attach_image(self.image)
         self.window.ai_client.validate_image_request.return_value = ('openrouter', 'openai/gpt-4o')
-        with patch('src.main_window.review_image', return_value=False) as review:
+        with patch('src.main_window_chat_flow.review_image', return_value=False) as review:
             self.send()
         review.assert_called_once_with(self.window, self.image, 'openrouter', 'openai/gpt-4o')
         self.assertIs(self.window._pending_image, self.image)
@@ -459,8 +459,8 @@ class TestProductGtk(ProductFixtures):
         self.window.documents_check.set_active(True)
         answer = 'Reviewed answer\n```bash\nsudo reboot\n```\n```file:/tmp/unsafe.conf\nchanged\n```'
         self.window.ai_client.stream_chat.side_effect = lambda messages, **options: iter([answer])
-        with patch('src.main_window.review_document_context', return_value=True) as review, \
-                patch('src.main_window.file_actions.offer_file_blocks_async') as files:
+        with patch('src.main_window_chat_flow.review_document_context', return_value=True) as review, \
+                patch('src.main_window_chat_flow.file_actions.offer_file_blocks_async') as files:
             self.send()
         reviewed = review.call_args.args[1]
         messages = self.window.ai_client.stream_chat.call_args.args[0]
@@ -478,7 +478,7 @@ class TestProductGtk(ProductFixtures):
             self.window._review_and_attach_image(self.image)
         answer = 'Screen analysis\n```bash\nsudo reboot\n```'
         self.window.ai_client.stream_chat.side_effect = lambda messages, **options: iter([answer])
-        with patch('src.main_window.file_actions.offer_file_blocks_async') as files:
+        with patch('src.main_window_chat_flow.file_actions.offer_file_blocks_async') as files:
             self.send()
         options = self.window.ai_client.stream_chat.call_args.kwargs
         self.assertEqual(options['images'], (self.image,))
@@ -499,7 +499,7 @@ class TestProductGtk(ProductFixtures):
         self.window.input_entry.set_text('Describe')
         with patch('src.main_window.review_image', return_value=True):
             self.window._review_and_attach_image(self.image)
-        with patch('src.main_window.file_actions.offer_file_blocks_async') as files:
+        with patch('src.main_window_chat_flow.file_actions.offer_file_blocks_async') as files:
             self.send()
         self.assertNotIn('PARTIAL IMAGE ANSWER', self.text())
         self.assertNotIn('PARTIAL IMAGE ANSWER', self.history.path.read_text())
@@ -513,8 +513,8 @@ class TestProductGtk(ProductFixtures):
         self.window.ai_client.provider_ready.return_value = False
         self.window.input_entry.set_text('network')
         self.window.documents_check.set_active(True)
-        with patch('src.main_window.review_document_context') as review, \
-                patch('src.main_window.file_actions.offer_file_blocks_async') as files:
+        with patch('src.main_window_chat_flow.review_document_context') as review, \
+                patch('src.main_window_chat_flow.file_actions.offer_file_blocks_async') as files:
             self.send()
         review.assert_not_called()
         self.window.ai_client.stream_chat.assert_not_called()
@@ -529,7 +529,7 @@ class TestProductGtk(ProductFixtures):
         self.window.actions.handle.return_value = None
         self.window.offline.propose.return_value = None
         self.window.input_entry.set_text('Ordinary next question')
-        with patch('src.main_window.file_actions.offer_file_blocks_async'):
+        with patch('src.main_window_chat_flow.file_actions.offer_file_blocks_async'):
             self.send()
         self.assertNotIn('unique-local-excerpt-314159', repr(self.window.ai_client.stream_chat.call_args.args[0]))
         self.assert_settled()
@@ -541,8 +541,8 @@ class TestProductGtk(ProductFixtures):
         self.window.ai_client.stream_chat.side_effect = fail
         self.window.input_entry.set_text('network')
         self.window.documents_check.set_active(True)
-        with patch('src.main_window.review_document_context', return_value=True), \
-                patch('src.main_window.file_actions.offer_file_blocks_async') as files:
+        with patch('src.main_window_chat_flow.review_document_context', return_value=True), \
+                patch('src.main_window_chat_flow.file_actions.offer_file_blocks_async') as files:
             self.send()
         self.assertNotIn('PARTIAL DOCUMENT ANSWER', self.text())
         self.assertIn('The model is unavailable. Local document matches', self.text())
@@ -568,7 +568,7 @@ class TestProductGtk(ProductFixtures):
         self.window.actions.handle.return_value = None
         self.window.offline.propose.return_value = None
         self.window.input_entry.set_text('New question')
-        with patch('src.main_window.file_actions.offer_file_blocks_async'):
+        with patch('src.main_window_chat_flow.file_actions.offer_file_blocks_async'):
             self.send()
         self.assertNotIn('images', self.window.ai_client.stream_chat.call_args.kwargs)
         messages = self.window.ai_client.stream_chat.call_args.args[0]

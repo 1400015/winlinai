@@ -1,6 +1,4 @@
 import gi
-import os
-import time
 import threading
 from typing import Optional, Dict
 
@@ -15,19 +13,12 @@ gi.require_version('Gdk', '3.0')
 from gi.repository import Gtk, GLib
 import logging
 
-from . import device_dialogs, dock, file_actions, offline_assistant
-from .device_actions import split_offer
-from .ai_client import AIClient, AIProviderError, AIRequestCancelled, AIResponseLimitError, AIImageRequestError
-from .chat_view import ChatView
-from .history_store import HistoryStore, MAX_HISTORY_MESSAGES, MAX_MESSAGE_CHARS
+from . import device_dialogs, dock, offline_assistant
+from .ai_client import AIClient, AIProviderError, AIImageRequestError
+from .history_store import MAX_HISTORY_MESSAGES
 from .i18n import _, get_language
 from .assistant_context import build_system_message
 from .conversation_dialog import show_conversations
-from .conversation_actions import ConversationActions
-from .change_journal import ChangeJournal
-from .change_dialog import show_file_changes
-from .diagnostic_dialog import show_diagnostic_report
-from .trial_dialog import show_trials
 from .provider_settings import MODE_LABELS, STATUS_LABELS
 from .main_window_theme_dialogs import (
     add_theme_dialog,
@@ -45,158 +36,37 @@ from .main_window_capture import (
     on_capture_complete,
     review_captured_image,
 )
+from .main_window_ui import build_style, build_ui, setup_keybindings, show_menu
+from .main_window_offline import (
+    finish_offline_commands,
+    offer_offline_commands,
+    record_offline_result,
+    run_offline_commands,
+)
+from .main_window_chat_flow import finalize_response, process_message, send_message
 from .main_window_settings import show_settings_dialog
-from .document_context import MAX_DOCUMENT_CONTEXT_CHARS, display_document_context, with_document_context
 from .document_store import DocumentStore
-from .document_review import review_document_context
 from .image_dialog import pick_image, review_image
 
 # Set up logger
 logger = logging.getLogger(__name__)
 
-# Theme helpers (color/font validation + GTK CSS builder) live in theme_utils
-# so they are testable without GTK and shared with the Qt track.
-from .theme_utils import (
-    build_gtk_css,
-    get_chat_style_colors,
-    safe_color,
-    safe_font_family,
-    safe_number,
-)
 from .chat_core import limit_context, request_budget
-
-# Intervalo mínimo entre flushes de chunks streaming para a UI (segundos).
-# Coalesce os chunks recebidos entre flushes: sem isto, cada chunk agendava
-# um idle próprio (+ um de scroll), milhares por resposta rápida.
-STREAM_FLUSH_INTERVAL = 0.08
+from .main_window_bootstrap import initialize_window
 
 
 class MainWindow(Gtk.Window):
     """Application main window"""
 
+    dock_method: Optional[str]
+    expert_mode: bool
+    _document_store: Optional[DocumentStore]
+    _cancel_event: threading.Event
+
     def __init__(self, app, config_manager, ai_client, system_utils, history_store=None):
         super().__init__(title="Linux AI Assistant")
+        initialize_window(self, app, config_manager, ai_client, system_utils, history_store)
 
-        from .desktop_icons import ICON_NAME, configure_application_icon
-        configure_application_icon()
-        self.set_icon_name(ICON_NAME)
-
-        self.app = app
-        self.config = config_manager
-        self.ai_client = ai_client
-        self.system_utils = system_utils
-        # Answers basic questions and offers local tasks when no API key is
-        # configured or the provider cannot be reached.
-        self.offline = offline_assistant.OfflineAssistant(system_utils, config_manager)
-        self.change_journal = ChangeJournal()
-
-        # Configurar janela
-        self.set_default_size(
-            config_manager.get("app.width", 400),
-            config_manager.get("app.height", 500)
-        )
-
-        # Posicionar janela
-        self.move(
-            config_manager.get("app.x_position", 100),
-            config_manager.get("app.y_position", 100)
-        )
-
-        # Configure transparency
-        screen = self.get_screen()
-        visual = screen.get_rgba_visual()
-        if visual:
-            self.set_visual(visual)
-            self.set_opacity(config_manager.get("app.opacity", 0.9))
-
-        # Make window always visible
-        self.set_keep_above(config_manager.get("app.always_on_top", True))
-        self.stick()
-
-        # Docked mode: pin to an edge and reserve screen space.
-        # O gtk-layer-shell exige init ANTES de realize: em Wayland tentamos
-        # aplicar já no __init__ (apply_dock confirma is_layer_window e cai
-        # para o fallback se não tiver efeito); em X11 os struts precisam do
-        # GdkWindow, pelo que ficam para _on_realize_dock().
-        self._dock_edge = config_manager.get("app.dock_edge", "right")
-        self._dock_width = config_manager.get("app.width", 400)
-        self.dock_method = None
-        if config_manager.get("app.dock_mode", "float") == "dock":
-            self.set_decorated(False)
-            if dock.apply_dock(self, self._dock_edge, self._dock_width) == "layer-shell":
-                self.dock_method = "layer-shell"
-                logger.info("Dock applied pre-realize via layer-shell")
-            else:
-                self.connect("realize", self._on_realize_dock)
-        else:
-            self.set_decorated(True)
-
-        # Make window resizable
-        self.set_resizable(True)
-
-        # Configurar estilo
-        self._setup_style()
-
-        # Configure notifications
-        self._setup_notifications()
-
-        # State variables
-        # Expert mode is persisted (app.expert_mode); `features.expert_mode`
-        # only controls whether the button is shown at all.
-        self.expert_mode = bool(self.config.get("app.expert_mode", False))
-        self.conversation_history = []
-        self.streaming = False
-        self.is_loading = False
-        # Per-request state: each send gets a new id and its own cancel event,
-        # so a cancelled worker can never re-arm itself or corrupt the next
-        # request (see _process_message / _finalize_response).
-        self._request_seq = 0
-        self._active_request = 0
-        self._cancel_event = threading.Event()
-        self._pending_image = None
-        self._pending_image_destination = None
-        self._document_store = None
-        # Settings dialog currently open (or None); lets the "Manage Themes"
-        # button switch tabs instead of opening a second dialog.
-        self._settings_notebook = None
-        # Interval (start, end) of the "Thinking..." placeholder and the
-        # streamed body offset vivem no ChatView (ver _create_ui).
-        # History is persisted from a single background writer (FIFO) owned
-        # by HistoryStore (GTK-free), so the GTK main loop never blocks on a
-        # full file rewrite per message.
-        self.history_store = history_store if history_store is not None else HistoryStore()
-        self.history_store.list_sessions()
-        self._history_recovering = False
-        self._file_action_controllers = []
-        from .system_context import detect_system_context
-        self.system_context = detect_system_context(self.offline.distro)
-        self.offline.set_system_context(self.system_context)
-        self.actions = ConversationActions(self.history_store, self.offline.distro.pkg_manager, context=self.system_context,
-                                           independent_display_watchdog=self.config.get('app.display_independent_watchdog', False))
-        self._refreshing_sessions = False
-
-        # Create interface
-        self._create_ui()
-        self._setup_style()
-
-        # Connect signals
-        self.connect("delete-event", self.on_delete_event)
-        # NB: apenas `configure-event` — já reporta x/y/width/height; ligar
-        # também `size-allocate` duplicava a escrita de app.width/height por
-        # evento de layout.
-        self.connect("configure-event", self.on_configure_event)
-
-        # Keyboard shortcuts
-        self._setup_keybindings()
-
-        # Load conversation history
-        self._load_conversation_history()
-        self._refresh_session_controls()
-        self._refresh_mode_status()
-        self._history_watch_source = GLib.timeout_add_seconds(1, self._check_history_writer)
-        self.connect('destroy', self._stop_history_watch)
-
-        logger.info("Main window initialized")
 
     def _setup_notifications(self):
         """Configure system notifications"""
@@ -273,33 +143,8 @@ class MainWindow(Gtk.Window):
 
     def _setup_keybindings(self):
         """Set up keyboard shortcuts"""
-        accel_group = Gtk.AccelGroup()
-        self.add_accel_group(accel_group)
+        setup_keybindings(self)
 
-        # Ctrl+Enter also sends (plain Enter already activates the entry)
-        key, mod = Gtk.accelerator_parse("<Control>Return")
-        self.input_entry.add_accelerator("activate", accel_group, key, mod, Gtk.AccelFlags.VISIBLE)
-
-        # Escape to clear input
-        key, mod = Gtk.accelerator_parse("Escape")
-        accel_group.connect(key, mod,
-                          Gtk.AccelFlags.VISIBLE, self.on_clear_input)
-
-        # Ctrl+E to toggle expert mode
-        key, mod = Gtk.accelerator_parse("<Control>e")
-        self.expert_btn.add_accelerator("clicked", accel_group, key, mod, Gtk.AccelFlags.VISIBLE)
-
-        # Ctrl+Q to close
-        key, mod = Gtk.accelerator_parse("<Control>q")
-        accel_group.connect(key, mod,
-                          Gtk.AccelFlags.VISIBLE, lambda *args: self.on_close_clicked())
-
-        # Ctrl+S to capture screen
-        key, mod = Gtk.accelerator_parse("<Control>s")
-        accel_group.connect(key, mod,
-                          Gtk.AccelFlags.VISIBLE, lambda *args: self.on_capture_screen_clicked(None))
-
-        logger.info("Keyboard shortcuts configured")
 
     def on_clear_input(self, *args):
         """Clear input when Escape is pressed"""
@@ -308,282 +153,18 @@ class MainWindow(Gtk.Window):
 
     def _setup_style(self):
         """Set up window CSS styling"""
-        # A screen provider also sees dialogs, menus and window decorations.
-        # Scope every rule to our content so those keep their native GTK theme.
-        self.get_style_context().add_class('linux-ai-main')
-        # add_provider_for_screen() is cumulative: remove the previous provider
-        # first so changing theme does not stack stylesheets indefinitely.
-        previous = getattr(self, "_style_provider", None)
-        if previous is not None:
-            try:
-                Gtk.StyleContext.remove_provider_for_screen(self.get_screen(), previous)
-            except Exception as e:
-                logger.warning(f"Could not remove previous CSS provider: {e}")
-        style_provider = Gtk.CssProvider()
+        build_style(self)
 
-        # Get cores do tema
-        colors = self.config.get_theme_colors()
-        theme_info = self.config.get_theme_info(self.config.get("app.theme", "dark"))
-
-        # Get settings de UI do tema
-        theme_ui = {}
-        if theme_info and 'ui' in theme_info:
-            theme_ui = theme_info['ui']
-
-        font_family = safe_font_family(
-            theme_ui.get('font_family') or self.config.get('ui.font_family'),
-            'Monospace',
-        )
-        font_size = safe_number(
-            theme_ui.get('font_size') or self.config.get('ui.font_size'),
-            12, int, minimum=4, maximum=72,
-        )
-        border_radius = safe_number(
-            theme_ui.get('border_radius') or self.config.get('ui.border_radius'),
-            10, int, minimum=0, maximum=64,
-        )
-
-        # Cores de syntax highlighting para o chat view
-        if hasattr(self, 'chat_view'):
-            self.chat_view.set_style(font_family, font_size,
-                                     get_chat_style_colors(colors, theme_info))
-
-        css = build_gtk_css(colors, theme_info, font_family, font_size, border_radius)
-
-        style_provider.load_from_data(css.encode())
-        Gtk.StyleContext.add_provider_for_screen(
-            self.get_screen(),
-            style_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
-        self._style_provider = style_provider
-        logger.debug("CSS style applied with theme: " + self.config.get("app.theme", "dark"))
 
     def _create_ui(self):
         """Create the window interface"""
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        main_box.set_property("name", "main-box")
-        self.add(main_box)
+        build_ui(self)
 
-        # Header
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        header.set_property("name", "header")
-        main_box.pack_start(header, False, False, 0)
-
-        # Menu button
-        menu_btn = Gtk.Button.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.MENU)
-        menu_btn.connect("clicked", self.on_menu_clicked)
-        menu_btn.set_tooltip_text(_("Menu"))
-        header.pack_start(menu_btn, False, False, 0)
-
-        # Title
-        title_label = Gtk.Label(label=_("Linux AI Assistant"))
-        title_label.set_halign(Gtk.Align.START)
-        title_label.set_valign(Gtk.Align.CENTER)
-        header.pack_start(title_label, True, True, 0)
-
-        # Icon de estado
-        self.status_icon = Gtk.Image.new_from_icon_name("object-select-symbolic", Gtk.IconSize.MENU)
-        self.status_icon.set_tooltip_text(_("Ready"))
-        header.pack_end(self.status_icon, False, False, 0)
-
-        # Close button
-        close_btn = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU)
-        close_btn.connect("clicked", lambda btn: self.on_close_clicked())
-        close_btn.set_tooltip_text(_("Close"))
-        header.pack_end(close_btn, False, False, 0)
-
-        # Minimize button
-        minimize_btn = Gtk.Button.new_from_icon_name("window-minimize-symbolic", Gtk.IconSize.MENU)
-        minimize_btn.connect("clicked", lambda btn: self.iconify())
-        minimize_btn.set_tooltip_text(_("Minimize"))
-        header.pack_end(minimize_btn, False, False, 0)
-
-        conversations = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        main_box.pack_start(conversations, False, False, 0)
-        self.session_combo = Gtk.ComboBoxText()
-        self.session_combo.set_hexpand(True)
-        self.session_combo.set_tooltip_text(_("Conversations"))
-        self.session_combo.connect('changed', self._on_session_selected)
-        conversations.pack_start(self.session_combo, True, True, 0)
-        new_conversation = Gtk.Button.new_from_icon_name('document-new-symbolic', Gtk.IconSize.MENU)
-        new_conversation.set_tooltip_text(_("New conversation"))
-        new_conversation.connect('clicked', self._new_conversation)
-        conversations.pack_start(new_conversation, False, False, 0)
-        actions_button = Gtk.Button.new_from_icon_name('view-list-symbolic', Gtk.IconSize.MENU)
-        actions_button.set_tooltip_text(_("Actions"))
-        actions_button.connect('clicked', self._show_action_audit)
-        conversations.pack_start(actions_button, False, False, 0)
-        self.trials_button = Gtk.Button.new_from_icon_name('applications-science-symbolic', Gtk.IconSize.MENU)
-        self.trials_button.set_tooltip_text(_("Trials / Debug"))
-        self.trials_button.connect('clicked', lambda button: show_trials(self))
-        conversations.pack_start(self.trials_button, False, False, 0)
-        self.mode_label = Gtk.Label(xalign=0, wrap=True)
-        main_box.pack_start(self.mode_label, False, False, 0)
-
-        self.history_warning = Gtk.InfoBar()
-        self.history_warning.set_message_type(Gtk.MessageType.WARNING)
-        self.history_warning.set_no_show_all(True)
-        warning = Gtk.Label(label=_("Conversation history could not be saved. Recover it before continuing; pending messages have not been discarded."),
-                            xalign=0, wrap=True)
-        self.history_warning.get_content_area().pack_start(warning, True, True, 0)
-        warning.show()
-        self.history_warning.add_button(_("Recover history"), Gtk.ResponseType.OK)
-        self.history_warning.connect('response', self._recover_history)
-        main_box.pack_start(self.history_warning, False, False, 0)
-
-        # Chat area
-        chat_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        chat_area.set_property("name", "chat-area")
-        main_box.pack_start(chat_area, True, True, 0)
-
-        # ChatView: buffer, tags, offsets, placeholder e scroll (GTK-isolado)
-        self.chat_view = ChatView(
-            font_family=self.config.get('ui.font_family', 'Monospace'),
-            font_size=self.config.get('ui.font_size', 12),
-        )
-        self.chat_scrolled = self.chat_view.scrolled
-        self.chat_textview = self.chat_view.textview
-        chat_area.pack_start(self.chat_scrolled, True, True, 0)
-
-        references = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        main_box.pack_start(references, False, False, 0)
-        self.documents_check = Gtk.CheckButton(label=_("Use selected documents"))
-        self.documents_check.set_tooltip_text(_("Review matching excerpts before sending them to the model. Offline mode shows local matches."))
-        references.pack_start(self.documents_check, True, True, 0)
-        documents_button = Gtk.Button.new_from_icon_name('folder-documents-symbolic', Gtk.IconSize.MENU)
-        documents_button.set_tooltip_text(_("Manage selected documents"))
-        documents_button.connect('clicked', self.on_documents_clicked)
-        references.pack_start(documents_button, False, False, 0)
-        self.attachment_label = Gtk.Label(xalign=0, wrap=True)
-        main_box.pack_start(self.attachment_label, False, False, 0)
-        self.remove_image_button = Gtk.Button(label=_("Remove image"))
-        self.remove_image_button.connect('clicked', lambda button: self._clear_pending_image())
-        self.remove_image_button.set_no_show_all(True)
-        self.remove_image_button.hide()
-        references.pack_start(self.remove_image_button, False, False, 0)
-
-        # Input area
-        # Keep the message field on its own row. On a narrow floating/docked
-        # window, five action buttons otherwise consume most of its width.
-        input_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        input_area.set_property("name", "input-area")
-        main_box.pack_start(input_area, False, False, 0)
-
-        # Entry for input
-        self.input_entry = Gtk.Entry()
-        # Both plain Enter and Ctrl+Enter send (the accelerator below also
-        # triggers "activate"), so the old "Ctrl+Enter" hint was misleading.
-        self.input_entry.set_placeholder_text(_("Type your message... (Enter to send)"))
-        self.input_entry.connect("activate", self.on_input_activate)
-        self.input_entry.set_hexpand(True)
-        input_area.pack_start(self.input_entry, False, True, 0)
-
-        # Action buttons
-        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        button_box.set_halign(Gtk.Align.END)
-        input_area.pack_start(button_box, False, False, 0)
-
-        # Cancel button
-        self.cancel_btn = Gtk.Button.new_from_icon_name("process-stop-symbolic", Gtk.IconSize.MENU)
-        self.cancel_btn.connect("clicked", self.on_cancel_streaming)
-        self.cancel_btn.set_tooltip_text(_("Cancel"))
-        self.cancel_btn.set_sensitive(False)
-        button_box.pack_start(self.cancel_btn, False, False, 0)
-
-        # Screen capture button (hidden when features.screen_capture is off)
-        capture_btn = Gtk.Button.new_from_icon_name("camera-photo-symbolic", Gtk.IconSize.MENU)
-        capture_btn.connect("clicked", self.on_capture_screen_clicked)
-        capture_btn.set_tooltip_text(_("Capture screen (Ctrl+S)"))
-        button_box.pack_start(capture_btn, False, False, 0)
-        self.capture_btn = capture_btn
-
-        image_btn = Gtk.Button.new_from_icon_name('insert-image-symbolic', Gtk.IconSize.MENU)
-        image_btn.connect('clicked', self.on_attach_image_clicked)
-        image_btn.set_tooltip_text(_("Attach an image for the next question"))
-        button_box.pack_start(image_btn, False, False, 0)
-
-        # Expert mode button (hidden when features.expert_mode is off)
-        self.expert_btn = Gtk.Button.new_from_icon_name("system-run-symbolic", Gtk.IconSize.MENU)
-        self.expert_btn.connect("clicked", self.on_expert_mode_toggled)
-        self.expert_btn.set_tooltip_text(_("Expert Mode (Ctrl+E)"))
-        button_box.pack_start(self.expert_btn, False, False, 0)
-
-        # Send button
-        send_btn = Gtk.Button.new_from_icon_name("go-next-symbolic", Gtk.IconSize.MENU)
-        send_btn.connect("clicked", lambda btn: self.on_send_clicked())
-        send_btn.set_tooltip_text(_("Send (Enter)"))
-        button_box.pack_start(send_btn, False, False, 0)
-
-        # Hide the feature buttons that are disabled in settings
-        self._apply_feature_toggles()
-        # Restore the persisted expert mode visually (the toggle only styles
-        # the button when the user clicks it).
-        if self.expert_mode and hasattr(self, "expert_btn"):
-            self.expert_btn.get_style_context().add_class("expert")
-
-        # Add welcome message
-        self._add_system_message(_("Welcome to Linux AI Assistant!\nType a message or press Ctrl+S to capture the screen."))
-
-        # Auto-scroll to bottom
-        self._scroll_to_bottom()
-
-        # Choose the typing field before the window is mapped. This establishes
-        # the initial keyboard target without presenting the window or changing
-        # focus again when a settings/review dialog is open.
-        self.set_focus(self.input_entry)
-
-        logger.info("UI created successfully")
 
     def on_menu_clicked(self, button):
         """Show options menu"""
-        menu = Gtk.Menu()
+        show_menu(self, button)
 
-        # Settings option
-        config_item = Gtk.MenuItem(label=_("Settings"))
-        config_item.connect("activate", self.on_config_clicked)
-        menu.append(config_item)
-
-        # History option
-        history_item = Gtk.MenuItem(label=_("Conversation History"))
-        history_item.connect("activate", self.on_history_clicked)
-        menu.append(history_item)
-
-        recover_item = Gtk.MenuItem(label=_("Recover history"))
-        recover_item.connect('activate', self._recover_history)
-        menu.append(recover_item)
-
-        # Statistics option
-        stats_item = Gtk.MenuItem(label=_("Statistics"))
-        stats_item.connect("activate", self.on_stats_clicked)
-        menu.append(stats_item)
-
-        report_item = Gtk.MenuItem(label=_("Diagnostic report"))
-        report_item.connect('activate', lambda item: show_diagnostic_report(self))
-        menu.append(report_item)
-        trials_item = Gtk.MenuItem(label=_("Trials / Debug"))
-        trials_item.connect('activate', lambda item: show_trials(self))
-        menu.append(trials_item)
-        changes_item = Gtk.MenuItem(label=_("File changes"))
-        changes_item.connect('activate', lambda item: show_file_changes(self))
-        menu.append(changes_item)
-        image_item = Gtk.MenuItem(label=_("Capture an image for AI"))
-        image_item.connect('activate', lambda item: self.on_capture_screen_clicked(None, for_ai=True))
-        menu.append(image_item)
-        documents_item = Gtk.MenuItem(label=_("Manage selected documents"))
-        documents_item.connect('activate', self.on_documents_clicked)
-        menu.append(documents_item)
-
-        # Separador
-        menu.append(Gtk.SeparatorMenuItem())
-
-        # Quit option
-        quit_item = Gtk.MenuItem(label=_("Quit"))
-        quit_item.connect("activate", lambda *args: self.on_close_clicked())
-        menu.append(quit_item)
-
-        menu.show_all()
-        menu.popup_at_pointer(None)  # Show no cursor
 
     def on_config_clicked(self, item):
         """Open settings window"""
@@ -950,102 +531,8 @@ class MainWindow(Gtk.Window):
 
     def on_send_clicked(self):
         """Handler for send button click"""
-        if (getattr(self, '_history_recovering', False)
-                or getattr(getattr(self, 'history_store', None), 'last_error', None) is not None):
-            self._show_history_warning()
-            return
-        if self.is_loading:
-            logger.warning("A message is already being processed")
-            return
+        send_message(self)
 
-        image = getattr(self, '_pending_image', None)
-        text = self.input_entry.get_text().strip()
-        if not text and image is not None:
-            text = _("Describe this image.")
-        if not text:
-            return
-
-        if len(text) > MAX_MESSAGE_CHARS:
-            self._add_system_message(_("Message exceeds the local history limit. Shorten it before sending."))
-            return
-
-        try:
-            provider = self.ai_client.active_provider()
-            route = {'provider': provider, 'ready': self.ai_client.provider_ready(provider)}
-        except AIProviderError:
-            route = {'provider': None, 'ready': False}
-        images: tuple = ()
-        document_context = ''
-        try:
-            if image is not None:
-                provider, model = self.ai_client.validate_image_request((image,))
-                if not route['ready']:
-                    raise AIImageRequestError(_("Configure a usable OpenRouter provider before sending an image."))
-                if ((provider, model) != getattr(self, '_pending_image_destination', None)
-                        and not review_image(self, image, provider, model)):
-                    return
-                route.update(provider=provider, model=model)
-                images = (image,)
-            documents_check = getattr(self, 'documents_check', None)
-            if documents_check is not None and documents_check.get_active():
-                document_context = self._get_document_store().context(text, max_chars=MAX_DOCUMENT_CONTEXT_CHARS)
-                if not document_context:
-                    self._add_system_message(_("No matching passages in the selected documents. Add documents or refine your question."))
-                    return
-                if route['ready'] and not review_document_context(self, document_context, route['provider']):
-                    return
-        except (OSError, ValueError, AIProviderError) as error:
-            self._add_system_message(str(error))
-            return
-
-        try:
-            history_text = text
-            if image is not None:
-                history_text += '\n\n' + _("[Image attached for this request; pixels are not stored.]")
-            self._remember("user", history_text)
-        except (OSError, ValueError, RuntimeError) as error:
-            self._add_system_message(_("Could not save the message: {error}").format(error=error))
-            return
-
-        self.input_entry.set_text("")
-        self._clear_pending_image()
-
-        # Add the user message to the chat...
-        self._add_user_message(history_text)
-
-        # ...and to the context + history.json (ponto único de persistência)
-
-        # Snapshot do pedido construído NA main thread: a worker deixou de
-        # ler conversation_history/expert_mode/config sem sincronização.
-        context = self._get_context_message()
-        messages = self._build_request_messages()
-        full_history = ([context] + messages) if context else messages
-        if document_context:
-            full_history = with_document_context(full_history, document_context)
-
-        # Per-request state: fresh id + cancel event. A worker that is
-        # still draining after a cancel can no longer touch this request.
-        self._request_seq += 1
-        request_id = self._request_seq
-        cancel_event = threading.Event()
-        self._cancel_event = cancel_event
-        self._active_request = request_id
-        self.chat_view.abort_stream()
-
-        # Update state
-        self.is_loading = True
-        self.streaming = True
-        self.cancel_btn.set_sensitive(True)
-        self.status_icon.set_from_icon_name("process-working-symbolic", Gtk.IconSize.MENU)
-        self.status_icon.set_tooltip_text(_("Processing..."))
-
-        # Process in a separate thread so the UI is not blocked
-        threading.Thread(
-            target=self._process_message,
-            args=(text, full_history, request_id, cancel_event, self.offline, route,
-                  self.history_store.active_session_id, images, document_context),
-            daemon=True,
-        ).start()
 
     def _process_message(self, message: str, full_history: list,
                          request_id: int, cancel_event: threading.Event, offline=None, route=None,
@@ -1056,173 +543,9 @@ class MainWindow(Gtk.Window):
         `request_id`, so output from a superseded or cancelled request is
         dropped instead of corrupting the next turn.
         """
-        if cancel_event.is_set() or request_id != self._active_request:
-            return
-        offline = offline if offline is not None else self.offline
-        GLib.idle_add(self._add_loading_message, request_id, cancel_event)
-        response_text = ""
-        # Coalescing de chunks: acumula no worker e faz flush à UI no
-        # máximo ~12x/segundo (STREAM_FLUSH_INTERVAL), em vez de um idle
-        # por chunk (milhares por resposta rápida).
-        pending_chunks = []
-        last_flush = 0.0
+        process_message(self, message, full_history, request_id, cancel_event,
+                        offline, route, session_id, images, document_context)
 
-        try:
-            actions = getattr(self, 'actions', None)
-            if actions is not None and session_id is not None and not images and not document_context:
-                reply = actions.handle(
-                    message, session_id, get_language(),
-                    is_current=lambda: request_id == self._active_request and not cancel_event.is_set(),
-                )
-                if reply is not None:
-                    GLib.idle_add(self._complete_action_reply, request_id, cancel_event, reply, session_id)
-                    return
-            offline_reply = None
-
-            ready = route['ready'] if route is not None else self.ai_client.provider_ready()
-            if not ready and images:
-                raise AIImageRequestError(_("The image request cannot be answered offline."))
-            if not ready and document_context:
-                GLib.idle_add(self._finish_local_document_reply, request_id, cancel_event,
-                              _("Local document matches (no model request):") + '\n\n' + display_document_context(document_context))
-                return
-            if not ready:
-                # No key for the selected provider: answer from local knowledge
-                # instead of failing with "API key not configured".
-                logger.info("No usable provider; using the offline assistant")
-                # Keep the diagnostic on this request's selected provider.
-                # An empty override may come from the process environment;
-                # only assignments this manager loaded can be removed here.
-                try:
-                    shadow_provider = route['provider'] if route is not None else self.ai_client.active_provider()
-                    if shadow_provider and self.config.stored_key_shadowed_by_empty_env(shadow_provider):
-                        shadow_var = self.config.api_key_env_var(shadow_provider)
-                        warning = _(
-                            "The stored key for {provider} is disabled by the empty "
-                            "{var} environment variable."
-                        ).format(provider=shadow_provider, var=shadow_var)
-                        if self.config.can_remove_empty_api_key_override(shadow_provider):
-                            warning += ' ' + _(
-                                "Open Settings → API and choose '{button}' to remove "
-                                "the empty assignment from .env."
-                            ).format(button=_("Use stored key (remove empty override from .env)"))
-                        else:
-                            warning += ' ' + _(
-                                "Remove or fill this variable at its source, then restart the application."
-                            )
-                        GLib.idle_add(
-                            self._add_system_message_if_active, request_id, cancel_event, warning)
-                except Exception:
-                    pass
-                offline_reply = offline.handle(message, get_language())
-            else:
-                try:
-                    if cancel_event.is_set():
-                        return
-                    options = {'provider': route['provider']} if route is not None else {}
-                    if images:
-                        options['images'] = images
-                        if route is not None:
-                            options['model'] = route['model']
-                    # Keep old third-party clients/test shims callable, while
-                    # the built-in client propagates this request's event.
-                    if isinstance(self.ai_client, AIClient):
-                        options['cancel_event'] = cancel_event
-                    stream = self.ai_client.stream_chat(full_history, **options)
-                    try:
-                        for chunk in stream:
-                            if cancel_event.is_set():
-                                break
-                            if len(response_text) + len(chunk) > MAX_MESSAGE_CHARS:
-                                raise AIResponseLimitError(
-                                    _("AI response exceeds the local history limit. The incomplete response was not saved; ask for a shorter response.")
-                                )
-                            response_text += chunk
-                            pending_chunks.append(chunk)
-                            now = time.monotonic()
-                            if now - last_flush >= STREAM_FLUSH_INTERVAL:
-                                GLib.idle_add(self._update_ai_message, request_id,
-                                              "".join(pending_chunks), True)
-                                pending_chunks = []
-                                last_flush = now
-                    finally:
-                        close = getattr(stream, 'close', None)
-                        if callable(close):
-                            close()
-                except AIRequestCancelled:
-                    GLib.idle_add(self._finalize_response, request_id, "", True)
-                    return
-                except (AIResponseLimitError, AIImageRequestError):
-                    # A local limit is an incomplete answer, not a reason to
-                    # silently replace it with an unrelated offline answer.
-                    raise
-                except AIProviderError as e:
-                    if images:
-                        raise
-                    if document_context and not cancel_event.is_set():
-                        GLib.idle_add(self._finish_local_document_reply, request_id, cancel_event,
-                                      _("The model is unavailable. Local document matches:") + '\n\n' + display_document_context(document_context),
-                                      )
-                        return
-                    # Falha ESTRUTURADA do provider (rede/HTTP/config) — não
-                    # é conteúdo do modelo. O fallback offline dispara tanto
-                    # para falha antes do primeiro chunk como a meio do
-                    # stream (o antigo _is_api_failure por prefixo perdia
-                    # os erros a meio e disparava o fallback para respostas
-                    # legítimas que começassem por "Error:").
-                    logger.info(
-                        "Provider unavailable (%s); using the offline assistant", e
-                    )
-                    if not cancel_event.is_set():
-                        pending_chunks.clear()
-                        response_text = ""
-                        offline_reply = offline.handle(message, get_language())
-
-                if offline_reply is None and not response_text and not cancel_event.is_set():
-                    if images:
-                        raise AIImageRequestError(_("The model returned no answer for the image."))
-                    if document_context:
-                        GLib.idle_add(self._finish_local_document_reply, request_id, cancel_event,
-                                      _("The model is unavailable. Local document matches:") + '\n\n' + display_document_context(document_context))
-                        return
-                    offline_reply = offline.handle(message, get_language())
-                if pending_chunks and offline_reply is None and not cancel_event.is_set():
-                    GLib.idle_add(self._update_ai_message, request_id,
-                                  "".join(pending_chunks), True)
-                    pending_chunks = []
-
-            action = None
-            if offline_reply is not None:
-                pending_chunks.clear()
-                response_text = offline_reply.text
-                GLib.idle_add(self._replace_ai_reply, request_id, cancel_event, response_text)
-                action = offline_reply
-            elif response_text and not cancel_event.is_set() and not images and not document_context:
-                # The model may explain the step. The command, if any, comes
-                # from the user's sentence and the local catalog.
-                propose = getattr(offline, "propose", None)
-                if callable(propose):
-                    try:
-                        action = propose(message, get_language())
-                    except Exception as exc:
-                        logger.error("Could not prepare a confirmed action: %s", exc, exc_info=True)
-
-            cancelled = cancel_event.is_set()
-            if images or document_context:
-                GLib.idle_add(self._finalize_response, request_id, response_text, cancelled, False)
-            else:
-                GLib.idle_add(self._finalize_response, request_id, response_text, cancelled)
-            interaction, commands = split_offer(action)
-            if (interaction or commands) and not cancelled:
-                GLib.idle_add(self._offer_confirmed_action, interaction, commands,
-                              request_id, cancel_event)
-
-        except Exception as e:
-            logger.error(f"Error processing message: {e}", exc_info=True)
-            GLib.idle_add(self._abort_ai_stream_if_active, request_id)
-            GLib.idle_add(self._add_system_message_if_active, request_id,
-                          cancel_event, _("Error: {error}").format(error=e))
-            GLib.idle_add(self._finalize_response, request_id, "", cancel_event.is_set())
 
     def _complete_action_reply(self, request_id, cancel_event, reply, session_id):
         """Record a local task without interpreting its output as model code."""
@@ -1322,118 +645,22 @@ class MainWindow(Gtk.Window):
 
     def _offer_offline_commands(self, commands, request_id, cancel_event):
         """Ask for confirmation before running privileged offline commands."""
-        if not commands:
-            return False
-        # A newer request may already be active by the time this idle
-        # callback runs: confirming a superseded turn would run commands
-        # the user no longer expects.
-        if request_id != self._active_request or cancel_event.is_set():
-            return False
+        return offer_offline_commands(self, commands, request_id, cancel_event)
 
-        dialog = Gtk.Dialog(
-            title=_("Run suggested commands?"),
-            transient_for=self,
-            modal=True,
-        )
-        dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
-        dialog.add_button(_("Run"), Gtk.ResponseType.OK)
-        dialog.set_default_response(Gtk.ResponseType.CANCEL)
-
-        content = dialog.get_content_area()
-        header = Gtk.Label(
-            label=_("These changes need administrator rights (pkexec):")
-        )
-        header.set_halign(Gtk.Align.START)
-        header.set_line_wrap(True)
-        content.pack_start(header, False, False, 6)
-        for command in commands:
-            row = Gtk.Label(label=f"$ {command.display()}")
-            row.set_halign(Gtk.Align.START)
-            row.set_selectable(True)
-            row.set_monospace(True)
-            content.pack_start(row, False, False, 2)
-
-        dialog.show_all()
-        response = dialog.run()
-        dialog.destroy()
-        if response != Gtk.ResponseType.OK:
-            return False
-        if request_id != self._active_request or cancel_event.is_set():
-            return False
-
-        self._local_running_request = request_id
-        self.is_loading = True
-        self.cancel_btn.set_sensitive(True)
-        self.status_icon.set_from_icon_name('process-working-symbolic', Gtk.IconSize.MENU)
-        self.status_icon.set_tooltip_text(_("Running confirmed commands…"))
-        self._add_system_message(_("Running confirmed commands. Cancellation stops later commands; an operation already started may still finish."))
-        threading.Thread(
-            target=self._run_offline_commands,
-            args=(commands, request_id, cancel_event, self.history_store.active_session_id),
-            daemon=True,
-        ).start()
-        return False
 
     def _run_offline_commands(self, commands, request_id, cancel_event, session_id=None):
         """Run the confirmed commands via pkexec (worker thread)."""
-        store = getattr(self, 'history_store', None)
-        session_id = session_id or (store.active_session_id if store is not None else None)
-        try:
-            for command in commands:
-                # Cancellation does not roll back an operation already begun.
-                if cancel_event.is_set() or request_id != self._active_request:
-                    logger.info("Skipping offline command: request was cancelled")
-                    return False
-                try:
-                    ok, output = offline_assistant.OfflineAssistant.run_privileged(command)
-                except Exception:
-                    # An exception after dispatch does not prove that no
-                    # mutation happened. Avoid exposing command secrets.
-                    ok = False
-                    output = _("The operation result could not be determined. Check the target before trying again.")
-                detail = output or (_("Done.") if ok else _("Failed."))
-                result = f"$ {command.display()}\n{detail}"
-                GLib.idle_add(self._record_offline_result, request_id, result, session_id)
-                if not ok:
-                    logger.info("Stopping confirmed command sequence after failure")
-                    break
-        finally:
-            GLib.idle_add(MainWindow._finish_offline_commands, self, request_id, cancel_event)
-        return False
+        return run_offline_commands(self, commands, request_id, cancel_event, session_id)
+
 
     def _finish_offline_commands(self, request_id, cancel_event):
-        if getattr(self, '_local_running_request', None) == request_id:
-            self._local_running_request = None
-        if request_id == self._active_request:
-            self._on_message_processed(request_id, cancel_event.is_set())
-        return False
+        return finish_offline_commands(self, request_id, cancel_event)
+
 
     def _record_offline_result(self, request_id, result, session_id=None):
-        """Show a command result and keep it in the conversation context.
+        """Show a command result and keep it in the conversation context."""
+        return record_offline_result(self, request_id, result, session_id)
 
-        Without the history append, follow-up questions had no idea what
-        was executed (the text only reached the chat buffer).
-        """
-        if request_id != self._active_request:
-            # A completed action belongs to its original conversation even after a switch.
-            if session_id is not None:
-                available = self.history_store.list_sessions(include_archived=True)
-                if any(session['id'] == session_id for session in available):
-                    try:
-                        self.history_store.append('assistant', result, session_id=session_id)
-                    except (OSError, ValueError, RuntimeError) as error:
-                        logger.error("Could not save the completed operation in its original session: %s", error)
-            return False
-        # A cancelled operation's actual outcome remains visible in the same
-        # conversation. It must never be presented as if cancellation undid it.
-        if self._cancel_event.is_set():
-            self._add_system_message(_("Operation completed after cancellation. Check its result below; cancellation did not undo it."))
-        self._add_system_message(result)
-        try:
-            self._remember("assistant", result)
-        except (OSError, ValueError, RuntimeError) as error:
-            self._add_system_message(_("Could not save the operation result: {error}").format(error=error))
-        return False
 
     def _record_file_action_result(self, session_id, status, message):
         """Retain the outcome of an approved operation in its own conversation."""
@@ -1464,68 +691,9 @@ class MainWindow(Gtk.Window):
     def _finalize_response(self, request_id: int, response_text: str,
                            cancelled: bool, allow_file_actions=True, history_text=None):
         """Persist the response and settle the UI (main loop only)."""
-        if request_id != self._active_request:
-            # A newer request replaced this one; its output is stale.
-            logger.debug("Dropping result from stale request %s", request_id)
-            return False
+        return finalize_response(self, request_id, response_text, cancelled,
+                                 allow_file_actions, history_text)
 
-        self.streaming = False
-
-        # Cancellation can arrive after the worker queued this final callback.
-        cancelled = cancelled or self._cancel_event.is_set()
-        if cancelled:
-            self.chat_view.abort_stream()
-
-        try:
-            if response_text and len(response_text) > MAX_MESSAGE_CHARS:
-                self.chat_view.abort_stream()
-                self._add_system_message(_("AI response exceeds the local history limit. The incomplete response was not saved; ask for a shorter response."))
-                return False
-            if response_text and not cancelled:
-                # The streamed body was inserted chunk by chunk; now that it is
-                # complete, tag its code spans and close with the "\n\n"
-                # separator (tudo dentro do ChatView, dono dos offsets).
-                self.chat_view.close_streamed_message(response_text)
-
-                # Ponto único de persistência do turno (memória + history.json)
-                self._remember("assistant", response_text if history_text is None else history_text)
-                store = getattr(self, 'history_store', None)
-                if store is not None:
-                    try:
-                        store.set_diagnostic_state(self.offline.diagnostic_state())
-                    except (OSError, ValueError) as error:
-                        logger.error("Could not persist diagnostic progress: %s", error)
-                        self._add_system_message(str(error))
-
-                # GTK owns the consent dialog; digest/preview and the approved
-                # transaction run in workers, including any polkit wait.
-                if self.expert_mode and allow_file_actions:
-                    session_id = self.history_store.active_session_id
-                    cancel_event = self._cancel_event
-                    controller = file_actions.offer_file_blocks_async(
-                        self, response_text,
-                        lambda status, msg: self._record_file_action_result(session_id, status, msg),
-                        lambda: self.config.get("permissions.allowed_edit_dirs", []),
-                        self.change_journal, session_id,
-                        is_current=lambda: (not getattr(self, '_audit_closed', False)
-                                            and not getattr(self, '_history_recovering', False)
-                                            and request_id == self._active_request
-                                            and not cancel_event.is_set()
-                                            and session_id == self.history_store.active_session_id),
-                    )
-                    controllers = getattr(self, '_file_action_controllers', None)
-                    if controllers is not None and controller is not None:
-                        controllers[:] = [item for item in controllers if not item.finished]
-                        controllers.append(controller)
-
-        except (OSError, ValueError, RuntimeError) as error:
-            logger.error("Could not finish or persist the response: %s", error)
-            self._add_system_message(_("Could not save the response: {error}").format(error=error))
-            if getattr(getattr(self, 'history_store', None), 'last_error', None) is not None:
-                self._show_history_warning(error)
-        finally:
-            self._on_message_processed(request_id, cancelled)
-        return False
 
     def _finish_local_document_reply(self, request_id, cancel_event, text):
         if request_id != self._active_request or cancel_event.is_set():

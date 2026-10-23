@@ -294,8 +294,8 @@ class TestGuiFeatureInterfaces(unittest.TestCase):
         from src.offline_assistant import Command
         commands = [Command(['apt-get', 'update']), Command(['apt-get', 'upgrade'])]
         window = SimpleNamespace(_active_request=1, _record_offline_result=lambda *args: None)
-        with patch('src.main_window.offline_assistant.OfflineAssistant.run_privileged', return_value=(False, 'failed')) as run, \
-                patch('src.main_window.GLib.idle_add'):
+        with patch('src.main_window_offline.offline_assistant.OfflineAssistant.run_privileged', return_value=(False, 'failed')) as run, \
+                patch('src.main_window_offline.GLib.idle_add'):
             self.MainWindow._run_offline_commands(window, commands, 1, threading.Event())
         self.assertEqual(run.call_count, 1)
 
@@ -308,7 +308,7 @@ class TestGuiFeatureInterfaces(unittest.TestCase):
         window = SimpleNamespace(_active_request=1, ai_client=client, offline=offline,
                                  _add_loading_message=Mock(), _replace_ai_reply=Mock(),
                                  _finalize_response=Mock(), _update_ai_message=Mock())
-        with patch('src.main_window.GLib.idle_add'):
+        with patch('src.main_window_chat_flow.GLib.idle_add'):
             self.MainWindow._process_message(window, 'private question', [], 1, threading.Event(),
                                              offline, {'ready': False, 'provider': None})
         client.stream_chat.assert_not_called()
@@ -316,7 +316,7 @@ class TestGuiFeatureInterfaces(unittest.TestCase):
         offline.handle.assert_called_once()
         cancelled = threading.Event()
         cancelled.set()
-        with patch('src.main_window.GLib.idle_add') as dispatch:
+        with patch('src.main_window_chat_flow.GLib.idle_add') as dispatch:
             self.MainWindow._process_message(window, 'private question', [], 1, cancelled,
                                              offline, {'ready': True, 'provider': 'openrouter'})
         client.stream_chat.assert_not_called()
@@ -333,7 +333,7 @@ class TestGuiFeatureInterfaces(unittest.TestCase):
                                  _cancel_event=threading.Event(), history_store=Mock(),
                                  _add_system_message=Mock(), _remember=Mock())
         window.history_store.list_sessions.return_value = [{'id': 'original-session'}]
-        with patch('src.main_window.GLib.idle_add'):
+        with patch('src.main_window_chat_flow.GLib.idle_add'):
             self.MainWindow._process_message(window, 'question', [], 1, threading.Event(),
                                              window.offline, {'ready': True, 'provider': 'local_llm'})
         client.stream_chat.assert_called_once_with([], provider='local_llm')

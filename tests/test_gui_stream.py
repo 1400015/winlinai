@@ -55,7 +55,7 @@ class TestGtkStream(unittest.TestCase):
         def idle_add(callback, *args):
             callbacks.append((callback, args))
             return 1
-        with patch('src.main_window.GLib.idle_add', side_effect=idle_add):
+        with patch('src.main_window_chat_flow.GLib.idle_add', side_effect=idle_add):
             self.MainWindow._process_message(window, 'question',
                                              [{'role': 'user', 'content': 'question'}],
                                              1, window._cancel_event)
@@ -182,8 +182,8 @@ class TestGtkStream(unittest.TestCase):
         def execute(command):
             window._cancel_event.set()
             return True, 'completed despite cancellation'
-        with patch('src.main_window.offline_assistant.OfflineAssistant.run_privileged', side_effect=execute) as run, \
-                patch('src.main_window.GLib.idle_add', side_effect=lambda callback, *args: callback(*args)):
+        with patch('src.main_window_offline.offline_assistant.OfflineAssistant.run_privileged', side_effect=execute) as run, \
+                patch('src.main_window_offline.GLib.idle_add', side_effect=lambda callback, *args: callback(*args)):
             self.MainWindow._run_offline_commands(window, [first, second], 1, window._cancel_event,
                                                    'original-session')
         self.assertEqual(run.call_count, 1)
