@@ -121,17 +121,17 @@ class TestRemoteModelHTTP(unittest.TestCase):
         self.mode = 'headers'
         began = time.monotonic()
         with self.assertRaises(ModelDiscoveryError):
-            self.discover(timeout=0.5)
+            self.discover(timeout=1.0)
         self.assertTrue(self.started.is_set())
-        self.assertLess(time.monotonic() - began, 1.4)
+        self.assertLess(time.monotonic() - began, 2.0)
 
     def test_partial_body_cannot_extend_deadline(self):
         self.mode = 'body'
         began = time.monotonic()
         with self.assertRaises(ModelDiscoveryError):
-            self.discover(timeout=0.5)
+            self.discover(timeout=1.0)
         self.assertTrue(self.started.is_set())
-        self.assertLess(time.monotonic() - began, 1.4)
+        self.assertLess(time.monotonic() - began, 2.0)
 
     def test_trickled_headers_and_bodies_cannot_reset_total_deadline(self):
         for mode in ('drip_headers', 'plain_drip', 'gzip_drip', 'gzip_header'):
@@ -140,9 +140,9 @@ class TestRemoteModelHTTP(unittest.TestCase):
                 self.started.clear()
                 began = time.monotonic()
                 with self.assertRaises(ModelDiscoveryError):
-                    self.discover(timeout=0.5)
+                    self.discover(timeout=1.0)
                 self.assertTrue(self.started.is_set())
-                self.assertLess(time.monotonic() - began, 1.4)
+                self.assertLess(time.monotonic() - began, 2.0)
 
     def test_worker_deadline_survives_absent_frontend_supervision(self):
         self.mode = 'drip_headers'
