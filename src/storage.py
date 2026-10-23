@@ -215,13 +215,10 @@ def _target_bytes(path, max_bytes=None):
         descriptor = open_regular(path)
     except FileNotFoundError:
         return None
-    try:
-        with os.fdopen(descriptor, 'rb') as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                raise ValueError('Bounded JSON input must be a regular file')
-            return stream.read() if max_bytes is None else stream.read(max_bytes + 1)
-    finally:
-        pass
+    with os.fdopen(descriptor, 'rb') as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError('Bounded JSON input must be a regular file')
+        return stream.read() if max_bytes is None else stream.read(max_bytes + 1)
 
 
 def update_json(path, update, default, max_bytes=None):

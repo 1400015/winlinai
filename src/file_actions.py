@@ -7,6 +7,7 @@ before writing. Paths outside the home require elevation (pkexec).
 
 import difflib
 import hashlib
+import logging
 import json
 import os
 import shutil
@@ -19,6 +20,8 @@ from xml.sax.saxutils import escape
 
 from .process_output import run_bounded
 from .privileged_write import FileOperationError, is_sensitive_path
+
+logger = logging.getLogger(__name__)
 
 try:
     from .render_core import FileBlock
@@ -143,7 +146,7 @@ def _make_backup(path):
             return backup
     except OSError as e:
         # Não bloquear a escrita por falha de backup, mas deixar registo.
-        print(f"Warning: could not create backup of {path}: {e}")
+        logger.warning("Could not create backup of %s: %s", path, e)
     return None
 
 

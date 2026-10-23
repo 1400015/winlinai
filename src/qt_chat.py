@@ -22,6 +22,7 @@ try:
 except ImportError:
     QT_AVAILABLE = False
 
+from . import i18n
 from .chat_core import (
     MAX_CONTEXT_CHARS,
     MAX_CONTEXT_MESSAGES,
@@ -131,7 +132,6 @@ class QtChatWidget(_BaseWidget):
         self.load_session()
 
     def _build(self):
-        from . import i18n
         layout = QtWidgets.QVBoxLayout(self)
 
         # Status indicator (shows when AI is thinking)
@@ -193,7 +193,6 @@ class QtChatWidget(_BaseWidget):
 
     def _on_attach_clicked(self):
         """Open file dialog to attach an image."""
-        from . import i18n
         filepath, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, i18n._("Attach image"), "",
             "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;All files (*)")
@@ -235,7 +234,6 @@ class QtChatWidget(_BaseWidget):
         file replaced or deleted at the path after the attach cannot
         change the payload.
         """
-        from . import i18n
         from pathlib import Path
 
         path = Path(filepath)
@@ -306,7 +304,6 @@ class QtChatWidget(_BaseWidget):
 
     def _update_provider_indicator(self):
         """Show which backend is active (AI provider, offline or refused)."""
-        from . import i18n
         try:
             use_provider = should_use_provider(self.ai_client, self.config)
         except Exception as error:
@@ -332,7 +329,6 @@ class QtChatWidget(_BaseWidget):
         if self._worker_thread is not None and self._worker_thread.is_alive():
             return  # Don't send while waiting for a response
         self.input.clear()
-        from . import i18n
 
         # Build display text with attachment indicators
         display_text = text
@@ -379,7 +375,6 @@ class QtChatWidget(_BaseWidget):
         self._clear_attachments()
 
     def _show_thinking(self):
-        from . import i18n
         self.status_label.setText(i18n._("Thinking..."))
         self.status_label.setVisible(True)
         # The send button becomes a Stop button while a request is in flight.
@@ -389,7 +384,6 @@ class QtChatWidget(_BaseWidget):
         self.input.setEnabled(False)
 
     def _hide_thinking(self):
-        from . import i18n
         self.status_label.setVisible(False)
         self.send_button.setText(i18n._("Send"))
         try:
@@ -407,7 +401,6 @@ class QtChatWidget(_BaseWidget):
 
     def _send_to_offline(self, text):
         """Send to the offline assistant (synchronous, fast)."""
-        from . import i18n
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         answer = offline_reply_text(self.offline, text, lang) or ""
         self._hide_thinking()
@@ -453,7 +446,6 @@ class QtChatWidget(_BaseWidget):
         """
         if not QT_AVAILABLE:
             return
-        from . import i18n
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         # Immutable snapshot: the worker reads this, the main thread keeps
         # appending to self._pending_messages for the next turn. The request
@@ -484,7 +476,6 @@ class QtChatWidget(_BaseWidget):
                     break
             if failure is not None:
                 self._hide_thinking()
-                from . import i18n
                 self.append_message(i18n._("System"), failure)
                 return
             attachments = prepared or None
@@ -534,7 +525,6 @@ class QtChatWidget(_BaseWidget):
         and it reaches the visible log and the provider context only if
         that session is still the one being shown.
         """
-        from . import i18n
         session_id = (token[1] if token is not None
                       else self._request_session_id)
         if self._token_matches(token):
@@ -552,7 +542,6 @@ class QtChatWidget(_BaseWidget):
     @_Slot(str, object)
     def _on_provider_failed(self, last_user_message, token=None):
         """Provider failed: fall back to the offline assistant (signal-based)."""
-        from . import i18n
         lang = i18n.get_language() if hasattr(i18n, "get_language") else "en"
         answer = offline_reply_text(self.offline, last_user_message, lang) or ""
         session_id = (token[1] if token is not None
@@ -568,7 +557,6 @@ class QtChatWidget(_BaseWidget):
     @_Slot(str, object)
     def _on_provider_image_failed(self, message, token=None):
         """The prepared image did not survive validation: refuse visibly."""
-        from . import i18n
         if not self._token_matches(token):
             return
         self._hide_thinking()
@@ -578,7 +566,6 @@ class QtChatWidget(_BaseWidget):
     @_Slot(str, object)
     def _on_provider_cancelled(self, last_user_message, token=None):
         """User cancelled the in-flight provider request."""
-        from . import i18n
         session_id = (token[1] if token is not None
                       else self._request_session_id)
         if self._token_matches(token):
@@ -700,7 +687,6 @@ class QtChatWidget(_BaseWidget):
         expert mode, at most 3 blocks, each confirmed via a Qt dialog and
         written through WindowsFileActions (path validation + backup + atomic).
         """
-        from . import i18n
         from .render_core import FileBlock
         from .windows_file_actions import WindowsFileActions, preview_diff
         from .qt_file_dialogs import confirm_file_write_qt
@@ -763,7 +749,6 @@ class QtChatWidget(_BaseWidget):
         if self.history_store is None:
             return
         if not self._session_action_allowed():
-            from . import i18n
             self.append_message(
                 i18n._("System"),
                 i18n._("Wait for the pending answer before switching conversations."))
@@ -777,7 +762,6 @@ class QtChatWidget(_BaseWidget):
         self.log.clear()
         self._log_chars = 0
         self._pending_messages = []
-        from . import i18n
         labels = {"user": i18n._("User"), "assistant": i18n._("AI"),
                   "system": i18n._("System")}
         for entry in entries:
@@ -801,13 +785,11 @@ class QtChatWidget(_BaseWidget):
     @_Slot(str)
     def append_system_message(self, text):
         """Append a system message (thread-safe: usable via invokeMethod)."""
-        from . import i18n
         self.append_message(i18n._("System"), text)
 
     def clear_conversation(self):
         """Clear the current conversation (new session)."""
         if not self._session_action_allowed():
-            from . import i18n
             self.append_message(
                 i18n._("System"),
                 i18n._("Wait for the pending answer before starting a new conversation."))

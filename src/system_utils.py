@@ -803,20 +803,19 @@ class SystemUtils:
             if not os.path.exists(image_path):
                 return False, f"File not found: {image_path}"
 
-            # Open image
-            img = Image.open(image_path)
-
             # Extract text
             try:
                 # timeout: pytesseract lança um subprocesso sem timeout
                 # próprio — um tesseract bloqueado congelava a thread para
                 # sempre (o fallback binário já usava timeout=30).
-                text = pytesseract.image_to_string(img, lang=lang, timeout=30)
+                # The image is closed by its context manager even on errors.
+                with Image.open(image_path) as img:
+                    text = pytesseract.image_to_string(img, lang=lang, timeout=30)
 
-                # If no text is obtained, try with English only
-                if not text.strip():
-                    logger.info("No text detected. Trying with English...")
-                    text = pytesseract.image_to_string(img, lang='eng', timeout=30)
+                    # If no text is obtained, try with English only
+                    if not text.strip():
+                        logger.info("No text detected. Trying with English...")
+                        text = pytesseract.image_to_string(img, lang='eng', timeout=30)
 
                 if text.strip():
                     logger.info(f"Text extracted successfully ({len(text)} characters)")
