@@ -589,10 +589,7 @@ class TestGracefulGtkFailure(unittest.TestCase):
 
 class TestThemeSanitisation(unittest.TestCase):
     def setUp(self):
-        try:
-            from src.main_window import safe_color, safe_font_family, safe_number
-        except ImportError:
-            self.skipTest("GTK is not available")
+        from src.theme_utils import safe_color, safe_font_family, safe_number
         self.safe_color = safe_color
         self.safe_font_family = safe_font_family
         self.safe_number = safe_number
@@ -994,29 +991,27 @@ class TestOfflineCommandCancellation(unittest.TestCase):
     """The offline command path must not outlive a cancelled request.
 
     main_window needs GTK, which is not available in every environment,
-    so the source is inspected instead of importing the module.
+    so the sources are inspected instead of importing the modules.
     """
 
     @classmethod
     def setUpClass(cls):
-        cls.source = (ROOT / "src" / "main_window.py").read_text()
+        cls.window = (ROOT / "src" / "main_window.py").read_text()
+        cls.offline = (ROOT / "src" / "main_window_offline.py").read_text()
 
     def test_record_offline_result_appends_to_history(self):
-        source = self.source
-        self.assertIn("def _record_offline_result", source)
-        self.assertIn("conversation_history.append", source)
-        self.assertIn("request_id == self._active_request", source)
+        self.assertIn("def _record_offline_result", self.window)
+        self.assertIn("conversation_history.append", self.window)
+        self.assertIn("request_id == window._active_request", self.offline)
 
     def test_run_offline_commands_checks_cancel_event(self):
-        source = self.source
-        self.assertIn("def _run_offline_commands", source)
-        self.assertIn("cancel_event.is_set()", source)
-        self.assertIn("request_id != self._active_request", source)
+        self.assertIn("def _run_offline_commands", self.window)
+        self.assertIn("cancel_event.is_set()", self.offline)
+        self.assertIn("request_id != window._active_request", self.offline)
 
     def test_offer_dialog_skips_stale_requests(self):
-        source = self.source
-        self.assertIn("def _offer_offline_commands", source)
-        self.assertIn("request_id != self._active_request", source)
+        self.assertIn("def _offer_offline_commands", self.window)
+        self.assertIn("request_id != window._active_request", self.offline)
 
 
 class TestI18nUnification(unittest.TestCase):
