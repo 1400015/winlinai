@@ -33,6 +33,9 @@ ALLOWED_HOSTS = {
 # Update check timeout
 CHECK_TIMEOUT = 10
 
+# Maximum response size for the GitHub API (1 MiB is plenty for release metadata)
+MAX_RESPONSE_BYTES = 1024 * 1024
+
 
 def is_windows() -> bool:
     """True when running on Windows."""
@@ -152,7 +155,10 @@ def check_for_updates(timeout: int = CHECK_TIMEOUT) -> Dict:
         context = ssl.create_default_context()
 
         with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                return {"status": "failed"}
+            data = json.loads(raw.decode("utf-8"))
 
         latest_version = data.get("tag_name", "").lstrip("v")
         if not latest_version:
