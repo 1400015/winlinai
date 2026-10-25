@@ -6,6 +6,7 @@ PySide6 is an optional dependency: when absent, ``available()`` is False and
 import logging
 import sys
 from typing import TYPE_CHECKING, Optional
+from . import i18n
 
 if TYPE_CHECKING:
     from .qt_chat import QtChatWidget
@@ -23,17 +24,13 @@ except ImportError as error:
     QT_AVAILABLE = False
     QT_IMPORT_ERROR = str(error)
 
-
 MIN_WINDOW_SIZE = (420, 260)
-
 
 class QtStartupError(RuntimeError):
     """A required backend failed before the Qt shell was ready."""
 
-
 def available() -> bool:
     return QT_AVAILABLE
-
 
 def missing_dependency_message() -> str:
     return (
@@ -42,12 +39,10 @@ def missing_dependency_message() -> str:
         "or add the `qt` extra: pip install -e .[qt]"
     )
 
-
 if TYPE_CHECKING or QT_AVAILABLE:
     _BaseShell = QtWidgets.QMainWindow
 else:
     _BaseShell = object
-
 
 class QtShell(_BaseShell):
     """Qt main window: status line plus the chat widget (phase 4b)."""
@@ -136,7 +131,6 @@ class QtShell(_BaseShell):
 
     def notify_update_available(self, update):
         """Show an update-available system message in the chat."""
-        from . import i18n
         message = i18n._(
             "New version available: {version} (open Settings → Updates for details)."
         ).format(version=update["version"])
@@ -205,7 +199,6 @@ class QtShell(_BaseShell):
             self.history_store.close()
 
     def _status_text(self):
-        from . import i18n
         name = {"windows": "Windows", "wsl": "WSL", "linux": "Linux"}.get(
             self.platform_name, self.platform_name)
         title = i18n._("Welcome to Linux AI Assistant!")
@@ -216,14 +209,12 @@ class QtShell(_BaseShell):
         self._close_history()
         super().closeEvent(event)
 
-
 def lock_file_path(base_dir=None):
     """Single-instance lock location for the Qt track."""
     import os
     directory = base_dir or os.path.join(
         os.path.expanduser("~"), ".config", "linux_ai_assistant")
     return os.path.join(directory, "qt-instance.lock")
-
 
 def _maybe_check_updates(config_manager, shell):
     """Silent background update check on startup (opt-in via app.check_updates).
@@ -271,7 +262,6 @@ def _maybe_check_updates(config_manager, shell):
     # Defer until the event loop is running so signals are delivered.
     QtCore.QTimer.singleShot(0, start)
 
-
 def run(config_manager=None, argv=None):
     """Start Qt with all required backends, returning a process exit code."""
     if not QT_AVAILABLE:
@@ -288,7 +278,6 @@ def run(config_manager=None, argv=None):
             except Exception as error:
                 raise QtStartupError("Configuration could not be loaded ({})".format(
                     type(error).__name__)) from error
-        from . import i18n
         i18n.set_language_from_config(config_manager)
         from .platform import detect_platform
         platform_name = detect_platform()
@@ -333,7 +322,6 @@ def run(config_manager=None, argv=None):
                 logger.warning("Could not flush Qt configuration: %s", type(error).__name__)
         if lock is not None:
             lock.unlock()
-
 
 if __name__ == "__main__":
     sys.exit(run(None))

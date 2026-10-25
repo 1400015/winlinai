@@ -16,6 +16,7 @@ import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from . import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,6 @@ try:
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
-
 
 # ---------------------------------------------------------------------------
 # Pure logic (no Qt required)
@@ -47,7 +47,6 @@ def export_to_markdown(messages: List[Dict], title: str = "Conversation") -> str
         lines.append("")
     return "\n".join(lines)
 
-
 def export_to_json(messages: List[Dict], title: str = "Conversation") -> str:
     """Export messages to JSON format."""
     data = {
@@ -59,7 +58,6 @@ def export_to_json(messages: List[Dict], title: str = "Conversation") -> str:
     }
     return json.dumps(data, indent=2, ensure_ascii=False)
 
-
 def export_to_text(messages: List[Dict]) -> str:
     """Export messages to plain text format."""
     lines = []
@@ -69,7 +67,6 @@ def export_to_text(messages: List[Dict]) -> str:
         lines.append(f"[{role}] {content}")
         lines.append("")
     return "\n".join(lines)
-
 
 def export_conversation(messages: List[Dict], filepath: str,
                         title: str = "Conversation") -> Tuple[bool, str]:
@@ -90,7 +87,6 @@ def export_conversation(messages: List[Dict], filepath: str,
         logger.error("Export failed: %s", type(error).__name__)
         return False, str(error)
 
-
 def get_last_assistant_message(messages: List[Dict]) -> Optional[str]:
     """Get the content of the last assistant message."""
     for msg in reversed(messages):
@@ -98,14 +94,12 @@ def get_last_assistant_message(messages: List[Dict]) -> Optional[str]:
             return msg.get("content", "")
     return None
 
-
 def get_last_user_message(messages: List[Dict]) -> Optional[str]:
     """Get the content of the last user message."""
     for msg in reversed(messages):
         if msg.get("role") == "user":
             return msg.get("content", "")
     return None
-
 
 def count_messages(messages: List[Dict]) -> Dict[str, int]:
     """Count messages by role."""
@@ -118,7 +112,6 @@ def count_messages(messages: List[Dict]) -> Dict[str, int]:
             counts["other"] += 1
     counts["total"] = len(messages)
     return counts
-
 
 def summarize_messages(messages: List[Dict], max_chars: int = 500) -> str:
     """Create a brief summary of the conversation (local, no AI)."""
@@ -137,7 +130,6 @@ def summarize_messages(messages: List[Dict], max_chars: int = 500) -> str:
         summary += f"\nLast: {last_assistant}..."
     return summary[:max_chars]
 
-
 # ---------------------------------------------------------------------------
 # Qt wrappers
 # ---------------------------------------------------------------------------
@@ -146,7 +138,6 @@ if TYPE_CHECKING or QT_AVAILABLE:
     _BaseMenu = QtWidgets.QMenu
 else:
     _BaseMenu = object
-
 
 class QtConversationMenu(_BaseMenu):
     """Context menu for the chat widget with conversation actions."""
@@ -159,7 +150,6 @@ class QtConversationMenu(_BaseMenu):
         self._build()
 
     def _build(self):
-        from . import i18n
 
         # Copy last response
         copy_action = self.addAction(i18n._("Copy last response"))
@@ -196,7 +186,6 @@ class QtConversationMenu(_BaseMenu):
 
     def _export(self, fmt: str):
         """Export conversation to a file."""
-        from . import i18n
         messages = self._messages()
         if not messages:
             return
@@ -221,12 +210,10 @@ class QtConversationMenu(_BaseMenu):
 
     def _show_summary(self):
         """Show a summary of the conversation."""
-        from . import i18n
         messages = self._messages()
         summary = summarize_messages(messages)
         QtWidgets.QMessageBox.information(
             self.chat, i18n._("Conversation summary"), summary)
-
 
 def add_context_menu_to_chat(chat_widget):
     """Add a context menu to the chat log widget."""

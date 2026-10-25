@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
+from . import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -25,19 +26,15 @@ MAX_IMAGE_BYTES = 64 * 1024 * 1024  # 64 MB
 MAX_IMAGE_PIXELS = 32 * 1000 * 1000
 MAX_IMAGE_EDGE = 16384
 
-
 class ScreenshotError(RuntimeError):
     """Screenshot capture failed."""
-
 
 class ScreenshotCancelled(ScreenshotError):
     """User cancelled the screenshot."""
 
-
 def is_windows() -> bool:
     """True when running on Windows."""
     return sys.platform == "win32"
-
 
 def capture_screen(region: Optional[Tuple[int, int, int, int]] = None,
                    save_path: Optional[str] = None) -> bytes:
@@ -112,7 +109,6 @@ def capture_screen(region: Optional[Tuple[int, int, int, int]] = None,
     except Exception as error:
         raise ScreenshotError(f"Capture failed: {type(error).__name__}") from error
 
-
 def capture_screen_dialog(parent=None) -> Optional[bytes]:
     """Show a dialog to capture the screen.
 
@@ -122,8 +118,6 @@ def capture_screen_dialog(parent=None) -> Optional[bytes]:
         from PySide6 import QtWidgets
     except ImportError:
         raise ScreenshotError("PySide6 is required for the screenshot dialog")
-
-    from . import i18n
 
     # Ask user what to capture
     options = [
@@ -143,7 +137,6 @@ def capture_screen_dialog(parent=None) -> Optional[bytes]:
         QtWidgets.QMessageBox.warning(parent, i18n._("Screenshot failed"), str(error))
         return None
 
-
 def save_screenshot(data: bytes, parent=None, default_name: str = "screenshot.png") -> Optional[str]:
     """Show a save dialog and save the screenshot.
 
@@ -153,8 +146,6 @@ def save_screenshot(data: bytes, parent=None, default_name: str = "screenshot.pn
         from PySide6 import QtWidgets
     except ImportError:
         raise ScreenshotError("PySide6 is required for the save dialog")
-
-    from . import i18n
 
     filepath, _ = QtWidgets.QFileDialog.getSaveFileName(
         parent, i18n._("Save screenshot"),
@@ -170,7 +161,6 @@ def save_screenshot(data: bytes, parent=None, default_name: str = "screenshot.pn
     except Exception as error:
         logger.error("Failed to save screenshot: %s", type(error).__name__)
         return None
-
 
 def capture_and_attach(parent=None) -> Optional[Tuple[str, bytes]]:
     """Capture screen and return (path, data) for attaching to a chat message.
