@@ -110,6 +110,8 @@ files = [
     "src/offline_assistant.py",
     "src/trial_dialog.py",
     "src/cli.py",
+    "src/cli_commands/__init__.py",
+    "src/cli_commands/parsers.py",
     "src/history_recovery.py",
     # Theme utilities (refactored from main_window.py)
     "src/theme_utils.py",

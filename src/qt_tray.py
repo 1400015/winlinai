@@ -18,6 +18,7 @@ import logging
 import sys
 from typing import TYPE_CHECKING
 from pathlib import Path
+from . import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +28,9 @@ try:
 except ImportError:
     QT_AVAILABLE = False
 
-
 TOGGLE_REASONS = frozenset(("Trigger", "MiddleClick"))
 
 ICON_NAME = "io.github.linux_ai_assistant"
-
 
 def qt_icon_candidates(platform, checkout_root, prefix, svg_path, icon_name=ICON_NAME):
     """Icon files for the Qt window and tray, first match wins.
@@ -50,7 +49,6 @@ def qt_icon_candidates(platform, checkout_root, prefix, svg_path, icon_name=ICON
         candidates.append(Path(svg_path))
     return candidates
 
-
 def _bundled_icon_path():
     """Locate the Qt icon in a checkout or an installed wheel."""
     from .desktop_icons import icon_path
@@ -60,7 +58,6 @@ def _bundled_icon_path():
             sys.platform, checkout, sys.prefix, icon_path())
          if path.is_file()),
         None)
-
 
 def _icon_from_svg(path):
     """Rasterize an SVG after the application already exists.
@@ -89,7 +86,6 @@ def _icon_from_svg(path):
         return None
     return QtGui.QIcon(QtGui.QPixmap.fromImage(image))
 
-
 def load_window_icon():
     """QIcon for the Qt window and tray, or None when Qt is unavailable."""
     if not QT_AVAILABLE:
@@ -103,7 +99,6 @@ def load_window_icon():
             return rendered
     return QtGui.QIcon(str(path))
 
-
 def _platform_label(platform_name):
     """Human-readable platform name for the tooltip."""
     return {
@@ -111,7 +106,6 @@ def _platform_label(platform_name):
         "wsl": "WSL",
         "linux": "Linux",
     }.get(platform_name, platform_name or "Unknown")
-
 
 def normalize_reason(activation_reason):
     """Normalize a Qt activation reason (enum, name or int) to a name."""
@@ -125,7 +119,6 @@ def normalize_reason(activation_reason):
         return text
     return {"2": "DoubleClick", "3": "Trigger", "4": "MiddleClick"}.get(text, "")
 
-
 def tray_click_toggles(config_manager, activation_reason, default=True):
     """Pure decision: does this activation reason toggle the drawer?
 
@@ -138,11 +131,9 @@ def tray_click_toggles(config_manager, activation_reason, default=True):
         return False
     return normalize_reason(activation_reason) in TOGGLE_REASONS
 
-
 def quit_only_after_confirmation(config_manager):
     """Placeholder decision point: quit stays explicit in the context menu."""
     return True
-
 
 def expert_mode_enabled(config_manager, default=False):
     """Read app.expert_mode from config, tolerating a broken backend."""
@@ -151,12 +142,10 @@ def expert_mode_enabled(config_manager, default=False):
     except Exception:
         return default
 
-
 if TYPE_CHECKING or QT_AVAILABLE:
     _BaseTray = QtWidgets.QSystemTrayIcon
 else:
     _BaseTray = object
-
 
 class QtTrayIcon(_BaseTray):
     """System tray icon with drawer toggle on left click.
@@ -189,13 +178,11 @@ class QtTrayIcon(_BaseTray):
 
     def _tooltip_text(self):
         """Tooltip with the platform name."""
-        from . import i18n
         platform = getattr(self.shell, "platform_name", "")
         label = _platform_label(platform)
         return "{} — {}".format(i18n._("Linux AI Assistant"), label)
 
     def _build_menu(self):
-        from . import i18n
         self.menu = QtWidgets.QMenu()
 
         # Show/Hide window toggle
@@ -282,7 +269,6 @@ class QtTrayIcon(_BaseTray):
             app.quit()
 
     def update_toggle_label(self, visible):
-        from . import i18n
         if hasattr(self, "toggle_action"):
             self.toggle_action.setText(
                 i18n._("Hide Window") if visible else i18n._("Show Window"))

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from . import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,6 @@ else:
         def decorator(func):
             return func
         return decorator
-
 
 # ---------------------------------------------------------------------------
 # Pure presentation logic (no Qt import needed to test these)
@@ -51,7 +51,6 @@ def export_session_to_file(store, session_id, filename):
     with open(filename, "w", encoding="utf-8") as handle:
         handle.write(export_to_text(messages))
 
-
 def update_status_phrase(update, current_version=""):
     """Choose the settings status phrase for a check result.
 
@@ -59,7 +58,6 @@ def update_status_phrase(update, current_version=""):
     never worded as being up to date, and 'current' carries the running
     version. 'available' carries the new version.
     """
-    from . import i18n
     status = (update or {}).get("status")
     if status == "available":
         return i18n._("New version available: {version}").format(
@@ -72,7 +70,6 @@ def update_status_phrase(update, current_version=""):
     if status == "unsupported":
         return i18n._("Update checks are supported on Windows.")
     return i18n._("Updates have not been checked.")
-
 
 def checkbox_is_checked(state) -> bool:
     """Interpret a checkbox state from any Qt binding generation.
@@ -101,7 +98,6 @@ def checkbox_is_checked(state) -> bool:
         return False
     return bool(state)
 
-
 def provider_rows(config, providers=("openrouter", "google_ai_studio")):
     """Rows for the API settings table, without exposing stored keys."""
     rows = []
@@ -121,7 +117,6 @@ def provider_rows(config, providers=("openrouter", "google_ai_studio")):
         })
     return rows
 
-
 def history_rows(store, include_archived=False):
     """Session summaries for the history dialog."""
     sessions = store.list_sessions(include_archived=include_archived)
@@ -135,7 +130,6 @@ def history_rows(store, include_archived=False):
             "active": session.get("id") == store.active_session_id,
         })
     return rows
-
 
 def save_api_key(config, provider, key_text):
     """Validate and persist an API key. Returns (ok, message)."""
@@ -151,7 +145,6 @@ def save_api_key(config, provider, key_text):
         return False, "store-failed"
     return True, "stored"
 
-
 def autostart_status_label(enabled):
     """Human-readable label for the autostart checkbox state.
 
@@ -160,7 +153,6 @@ def autostart_status_label(enabled):
     if enabled is None:
         return "unavailable"
     return "enabled" if enabled else "disabled"
-
 
 def statistics_rows(ai_client):
     """Token usage rows for the statistics dialog.
@@ -184,7 +176,6 @@ def statistics_rows(ai_client):
         })
     return rows
 
-
 # ---------------------------------------------------------------------------
 # Dialogs (thin Qt wrappers)
 # ---------------------------------------------------------------------------
@@ -194,7 +185,6 @@ if TYPE_CHECKING or QT_AVAILABLE:
 else:
     _BaseDialog = object
 
-
 class QtSettingsDialog(_BaseDialog):
     """API settings: provider selector, key entry, save, plus autostart."""
 
@@ -202,7 +192,6 @@ class QtSettingsDialog(_BaseDialog):
         if not QT_AVAILABLE:
             raise RuntimeError("PySide6 is required for QtSettingsDialog")
         super().__init__(parent)
-        from . import i18n
         self.config = config
         self.setWindowTitle(i18n._("Settings"))
         self.setMinimumWidth(420)
@@ -312,7 +301,6 @@ class QtSettingsDialog(_BaseDialog):
         layout.addWidget(group)
 
     def _refresh_updates_status(self):
-        from . import i18n
         from .updater import get_current_version
         try:
             available = bool(self.config.get("update.available", False))
@@ -344,7 +332,6 @@ class QtSettingsDialog(_BaseDialog):
 
     def _check_updates_now(self):
         """Run an update check via a signal-based worker (no invokeMethod)."""
-        from . import i18n
         from .qt_worker import Worker, start_worker
         from .updater import check_for_updates
 
@@ -357,7 +344,6 @@ class QtSettingsDialog(_BaseDialog):
 
     @_Slot(object)
     def _on_update_check_done(self, update):
-        from . import i18n
         from .updater import get_current_version
         result = update or {}
         status = result.get("status")
@@ -421,7 +407,6 @@ class QtSettingsDialog(_BaseDialog):
         layout.addWidget(group)
 
     def _on_autostart_changed(self, state):
-        from . import i18n
         from .windows_autostart import set_autostart, is_autostart_enabled
         enabled = checkbox_is_checked(state)
         result = set_autostart(enabled)
@@ -449,7 +434,6 @@ class QtSettingsDialog(_BaseDialog):
         if ok:
             self.accept()
 
-
 class QtHistoryDialog(_BaseDialog):
     """Conversation history: session list, open, new, archive, delete, export."""
 
@@ -457,7 +441,6 @@ class QtHistoryDialog(_BaseDialog):
         if not QT_AVAILABLE:
             raise RuntimeError("PySide6 is required for QtHistoryDialog")
         super().__init__(parent)
-        from . import i18n
         self.store = store
         self.on_open = on_open
         self.on_new = on_new
@@ -500,7 +483,6 @@ class QtHistoryDialog(_BaseDialog):
 
     def reload(self):
         self.list_widget.clear()
-        from . import i18n
         for entry in history_rows(self.store, include_archived=True):
             label = entry["title"]
             if entry["active"]:
@@ -541,7 +523,6 @@ class QtHistoryDialog(_BaseDialog):
             guard = getattr(widget, "chat", None)
             if guard is not None and hasattr(guard, "request_in_flight"):
                 if guard.request_in_flight():
-                    from . import i18n
                     QtWidgets.QMessageBox.information(
                         self, i18n._("Conversation History"),
                         i18n._("Wait for the pending answer before changing conversations."))
@@ -582,7 +563,6 @@ class QtHistoryDialog(_BaseDialog):
         try:
             self.store.select_session(session_id)
         except ValueError as error:
-            from . import i18n
             QtWidgets.QMessageBox.information(
                 self, i18n._("Conversation History"), str(error))
             return
@@ -616,7 +596,6 @@ class QtHistoryDialog(_BaseDialog):
 
     def _delete(self):
         """Delete the selected session after confirmation."""
-        from . import i18n
         item = self._selected_item()
         if item is None:
             return
@@ -644,7 +623,6 @@ class QtHistoryDialog(_BaseDialog):
 
     def _export(self):
         """Export the selected session to a file."""
-        from . import i18n
         item = self._selected_item()
         if item is None:
             return
@@ -661,7 +639,6 @@ class QtHistoryDialog(_BaseDialog):
             QtWidgets.QMessageBox.warning(
                 self, i18n._("Export failed"), str(error))
 
-
 class QtStatisticsDialog(_BaseDialog):
     """Usage statistics: token counts by provider, with reset."""
 
@@ -669,7 +646,6 @@ class QtStatisticsDialog(_BaseDialog):
         if not QT_AVAILABLE:
             raise RuntimeError("PySide6 is required for QtStatisticsDialog")
         super().__init__(parent)
-        from . import i18n
         self.ai_client = ai_client
         self.setWindowTitle(i18n._("Statistics - Linux AI Assistant"))
         self.setMinimumSize(400, 300)
